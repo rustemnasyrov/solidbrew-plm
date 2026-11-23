@@ -17,3 +17,4 @@ workspaces/
 TestResults/
 *.user
 publish/
+.swjobs/
