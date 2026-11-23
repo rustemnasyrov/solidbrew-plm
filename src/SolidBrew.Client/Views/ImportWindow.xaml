@@ -1,0 +1,187 @@
+<Window x:Class="SolidBrew.Client.Views.ImportWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:v="clr-namespace:SolidBrew.Client.Views"
+        Style="{StaticResource AppWindow}"
+        Width="1160" Height="800" MinWidth="820" MinHeight="560" ShowInTaskbar="False">
+    <DockPanel>
+        <Border DockPanel.Dock="Bottom" Style="{StaticResource Toolbar}" BorderThickness="0,1,0,0">
+            <DockPanel>
+                <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" Margin="12,0,0,0">
+                    <Button Style="{StaticResource PrimaryButton}" Tag="&#xE898;" Content="Поставить на учёт" Command="{Binding ImportCommand}"
+                            ToolTip="Одной операцией поставить на учёт все документы комплекта; исходники не меняются" />
+                    <Button Style="{StaticResource PlainButton}" Content="Закрыть" Command="{Binding CancelCommand}" IsCancel="True" />
+                </StackPanel>
+                <v:BusyBar DataContext="{Binding Busy}" />
+            </DockPanel>
+        </Border>
+
+        <!-- Проект и комментарий. -->
+        <Border DockPanel.Dock="Bottom" Padding="12,8" BorderBrush="{StaticResource BorderBrush}" BorderThickness="0,1,0,0">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="300" />
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                </Grid.RowDefinitions>
+                <TextBlock Text="Проект" VerticalAlignment="Center" Margin="0,0,8,0" />
+                <ComboBox Grid.Column="1" ItemsSource="{Binding Projects}" SelectedItem="{Binding SelectedProject}" DisplayMemberPath="Name" />
+                <TextBlock Grid.Column="2" Text="Комментарий" VerticalAlignment="Center" Margin="16,0,8,0" />
+                <TextBox Grid.Column="3" Text="{Binding Comment, UpdateSourceTrigger=PropertyChanged}" />
+                <CheckBox Grid.Row="1" Grid.ColumnSpan="4" Margin="0,8,0,0" IsChecked="{Binding AllowMissing}"
+                          Content="Разрешить постановку с отсутствующими и неподтверждёнными ссылками (такие компоненты CAD не найдёт)" />
+            </Grid>
+        </Border>
+
+        <Grid Margin="12">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="*" />
+            </Grid.RowDefinitions>
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+                <StackPanel Margin="0,0,12,0">
+                    <TextBlock Style="{StaticResource SubHeader}" Text="Головной документ" Margin="0,0,0,4" />
+                    <DockPanel>
+                        <Button DockPanel.Dock="Right" Style="{StaticResource IconButton}" Tag="&#xE8E5;" Content="Выбрать…" Command="{Binding BrowseHeadCommand}" Margin="6,0,0,0" />
+                        <TextBox Text="{Binding HeadFile, UpdateSourceTrigger=PropertyChanged}" />
+                    </DockPanel>
+                    <TextBlock Style="{StaticResource Muted}" Margin="0,4,0,0"
+                               Text="Сборка (или деталь, чертёж) готового проекта, например на сетевом диске. Исходники только читаются: не перемещаются, не переименовываются и не изменяются. Папка головного файла — папка поиска." />
+                    <Button HorizontalAlignment="Left" Margin="0,8,0,0" Style="{StaticResource PrimaryButton}" Tag="&#xE721;" Content="Прочитать ссылки"
+                            Command="{Binding AnalyzeCommand}" />
+                </StackPanel>
+                <DockPanel Grid.Column="1">
+                    <TextBlock DockPanel.Dock="Top" Style="{StaticResource SubHeader}" Text="Дополнительные папки поиска (чертежи, спецификации)" Margin="0,0,0,4" />
+                    <StackPanel DockPanel.Dock="Right" Margin="6,0,0,0">
+                        <Button Style="{StaticResource IconButton}" Tag="&#xE710;" Content="Добавить…" Command="{Binding AddFolderCommand}" Margin="0,0,0,4" />
+                        <Button Style="{StaticResource IconButton}" Tag="&#xE738;" Content="Убрать" Command="{Binding RemoveFolderCommand}" Margin="0" />
+                    </StackPanel>
+                    <ListBox ItemsSource="{Binding ExtraFolders}" SelectedItem="{Binding SelectedFolder}" Height="72" />
+                </DockPanel>
+            </Grid>
+            <TextBlock Grid.Row="1" Text="{Binding Summary}" TextWrapping="Wrap" FontWeight="SemiBold" Margin="0,10,0,6" />
+            <Border Grid.Row="2" BorderBrush="{StaticResource BorderBrush}" BorderThickness="1" Padding="6" MaxHeight="130" Margin="0,0,0,8"
+                    Visibility="{Binding Problems.Count, Converter={StaticResource CountVis}}">
+                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                    <ItemsControl ItemsSource="{Binding Problems}" ItemTemplate="{StaticResource ProblemTemplate}" />
+                </ScrollViewer>
+            </Border>
+
+            <TabControl Grid.Row="3">
+                <TabItem Header="{Binding DocumentsHeader}">
+                    <DataGrid ItemsSource="{Binding Documents}">
+                        <DataGrid.Columns>
+                            <DataGridTemplateColumn Header="Включить" Width="70">
+                                <DataGridTemplateColumn.CellTemplate>
+                                    <DataTemplate>
+                                        <CheckBox IsChecked="{Binding Include, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" HorizontalAlignment="Center"
+                                                  IsEnabled="{Binding IsExtra}" ToolTip="Для документов из дополнительных папок: ставить ли на учёт" />
+                                    </DataTemplate>
+                                </DataGridTemplateColumn.CellTemplate>
+                            </DataGridTemplateColumn>
+                            <DataGridTextColumn Header="Путь в хранилище" Binding="{Binding RelPath}" Width="2*" />
+                            <DataGridTextColumn Header="Обозначение" Binding="{Binding Designation}" Width="*" />
+                            <DataGridTextColumn Header="Наименование" Binding="{Binding Name}" Width="*" />
+                            <DataGridTextColumn Header="Вид" Binding="{Binding KindText}" Width="Auto" />
+                            <DataGridTextColumn Header="Откуда" Binding="{Binding RoleText}" Width="Auto" />
+                            <DataGridTextColumn Header="Версия CAD" Binding="{Binding CadVersion}" Width="Auto" />
+                            <DataGridCheckBoxColumn Header="В постановке" Binding="{Binding IsIncluded, Mode=OneWay}" Width="Auto" />
+                            <DataGridTextColumn Header="Ошибка чтения" Binding="{Binding ReadError}" Width="*" />
+                        </DataGrid.Columns>
+                    </DataGrid>
+                </TabItem>
+                <TabItem Header="{Binding FoundHeader}">
+                    <DataGrid ItemsSource="{Binding Found}">
+                        <DataGrid.Columns>
+                            <DataGridTextColumn Header="Документ" Binding="{Binding SourceName}" Width="*" />
+                            <DataGridTextColumn Header="Ссылка (как записана)" Binding="{Binding SavedPath}" Width="2*" />
+                            <DataGridTextColumn Header="Найден" Binding="{Binding TargetPath}" Width="2*" />
+                        </DataGrid.Columns>
+                    </DataGrid>
+                </TabItem>
+                <TabItem Header="{Binding OutsideHeader}">
+                    <DockPanel>
+                        <TextBlock DockPanel.Dock="Top" Style="{StaticResource Muted}" Margin="4"
+                                   Text="Файл есть по сохранённому пути, но вне указанных папок. Подтвердите, если это нужный файл, или добавьте его папку в поиск." />
+                        <DataGrid ItemsSource="{Binding Outside}">
+                            <DataGrid.Columns>
+                                <DataGridTemplateColumn Header="Подтвердить" Width="90">
+                                    <DataGridTemplateColumn.CellTemplate>
+                                        <DataTemplate>
+                                            <CheckBox IsChecked="{Binding Accept, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" HorizontalAlignment="Center" />
+                                        </DataTemplate>
+                                    </DataGridTemplateColumn.CellTemplate>
+                                </DataGridTemplateColumn>
+                                <DataGridTextColumn Header="Документ" Binding="{Binding SourceName}" Width="*" />
+                                <DataGridTextColumn Header="Ссылка (как записана)" Binding="{Binding SavedPath}" Width="2*" />
+                                <DataGridTextColumn Header="Найден" Binding="{Binding TargetPath}" Width="2*" />
+                            </DataGrid.Columns>
+                        </DataGrid>
+                    </DockPanel>
+                </TabItem>
+                <TabItem Header="{Binding NameOnlyHeader}">
+                    <DockPanel>
+                        <TextBlock DockPanel.Dock="Top" Style="{StaticResource Muted}" Margin="4"
+                                   Text="По сохранённому пути файла нет; в папках поиска найден один файл с таким же именем. PDM не выбирает файл по имени сама — подтвердите, что это тот файл." />
+                        <DataGrid ItemsSource="{Binding NameOnly}">
+                            <DataGrid.Columns>
+                                <DataGridTemplateColumn Header="Подтвердить" Width="90">
+                                    <DataGridTemplateColumn.CellTemplate>
+                                        <DataTemplate>
+                                            <CheckBox IsChecked="{Binding Accept, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" HorizontalAlignment="Center" />
+                                        </DataTemplate>
+                                    </DataGridTemplateColumn.CellTemplate>
+                                </DataGridTemplateColumn>
+                                <DataGridTextColumn Header="Документ" Binding="{Binding SourceName}" Width="*" />
+                                <DataGridTextColumn Header="Ссылка (как записана)" Binding="{Binding SavedPath}" Width="2*" />
+                                <DataGridTextColumn Header="Найден файл с тем же именем" Binding="{Binding TargetPath}" Width="2*" />
+                            </DataGrid.Columns>
+                        </DataGrid>
+                    </DockPanel>
+                </TabItem>
+                <TabItem Header="{Binding AmbiguousHeader}">
+                    <DockPanel>
+                        <TextBlock DockPanel.Dock="Top" Style="{StaticResource Muted}" Margin="4"
+                                   Text="По сохранённому пути файла нет, а файлов с таким именем несколько. Выберите нужный вариант." />
+                        <DataGrid ItemsSource="{Binding Ambiguous}">
+                            <DataGrid.Columns>
+                                <DataGridTextColumn Header="Документ" Binding="{Binding SourceName}" Width="*" />
+                                <DataGridTextColumn Header="Ссылка (как записана)" Binding="{Binding SavedPath}" Width="1.5*" />
+                                <DataGridTemplateColumn Header="Вариант" Width="2.5*">
+                                    <DataGridTemplateColumn.CellTemplate>
+                                        <DataTemplate>
+                                            <ComboBox ItemsSource="{Binding Candidates}" SelectedItem="{Binding Chosen, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                                        </DataTemplate>
+                                    </DataGridTemplateColumn.CellTemplate>
+                                </DataGridTemplateColumn>
+                            </DataGrid.Columns>
+                        </DataGrid>
+                    </DockPanel>
+                </TabItem>
+                <TabItem Header="{Binding MissingHeader}">
+                    <DockPanel>
+                        <TextBlock DockPanel.Dock="Top" Style="{StaticResource Muted}" Margin="4"
+                                   Text="Файл не найден ни по сохранённому пути, ни по имени в папках поиска. Добавьте папку с ним в поиск или разрешите постановку с отсутствующими ссылками." />
+                        <DataGrid ItemsSource="{Binding Missing}">
+                            <DataGrid.Columns>
+                                <DataGridTextColumn Header="Документ" Binding="{Binding SourceName}" Width="*" />
+                                <DataGridTextColumn Header="Ссылка (как записана)" Binding="{Binding SavedPath}" Width="3*" />
+                            </DataGrid.Columns>
+                        </DataGrid>
+                    </DockPanel>
+                </TabItem>
+            </TabControl>
+        </Grid>
+    </DockPanel>
+</Window>

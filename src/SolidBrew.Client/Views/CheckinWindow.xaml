@@ -1,0 +1,96 @@
+<Window x:Class="SolidBrew.Client.Views.CheckinWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:v="clr-namespace:SolidBrew.Client.Views"
+        Style="{StaticResource AppWindow}"
+        Width="1100" Height="720" MinWidth="760" MinHeight="480" ShowInTaskbar="False">
+    <DockPanel>
+        <Border DockPanel.Dock="Bottom" Style="{StaticResource Toolbar}" BorderThickness="0,1,0,0">
+            <DockPanel>
+                <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" Margin="12,0,0,0">
+                    <Button Style="{StaticResource PrimaryButton}" Tag="&#xE898;" Content="Сдать" Command="{Binding CheckinCommand}"
+                            ToolTip="Опубликовать новые версии отмеченных документов одной операцией и снять блокировки" />
+                    <Button Style="{StaticResource IconButton}" Tag="&#xE72E;" Content="Сдать и оставить в работе" Command="{Binding CheckinKeepLocksCommand}"
+                            ToolTip="Опубликовать версии и сохранить блокировки" />
+                    <Button Style="{StaticResource PlainButton}" Content="Закрыть" Command="{Binding CancelCommand}" IsCancel="True" />
+                </StackPanel>
+                <v:BusyBar DataContext="{Binding Busy}" />
+            </DockPanel>
+        </Border>
+        <Grid Margin="12">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="2*" MinHeight="120" />
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="*" MinHeight="80" />
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+            </Grid.RowDefinitions>
+            <TextBlock Style="{StaticResource Header}" Text="Сдача: новые и изменённые документы рабочей папки" />
+            <DockPanel Grid.Row="1" Margin="0,0,0,6">
+                <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+                    <Button Style="{StaticResource IconButton}" Tag="&#xE73A;" Content="Отметить все" Command="{Binding SelectAllCommand}" />
+                    <Button Style="{StaticResource IconButton}" Tag="&#xE739;" Content="Снять все" Command="{Binding SelectNoneCommand}" />
+                    <Button Style="{StaticResource IconButton}" Tag="&#xE72C;" Content="Обновить" Command="{Binding LoadCommand}" Margin="0" />
+                </StackPanel>
+                <StackPanel>
+                    <TextBlock Text="{Binding Summary}" TextWrapping="Wrap" FontWeight="SemiBold" />
+                    <TextBlock Style="{StaticResource Muted}">
+                        <Run Text="Рабочая папка:" /> <Run Text="{Binding WorkRoot, Mode=OneWay}" />
+                    </TextBlock>
+                </StackPanel>
+            </DockPanel>
+            <DataGrid Grid.Row="2" ItemsSource="{Binding Items}">
+                <DataGrid.Columns>
+                    <DataGridTemplateColumn Header="Сдать" Width="52">
+                        <DataGridTemplateColumn.CellTemplate>
+                            <DataTemplate>
+                                <CheckBox IsChecked="{Binding Include, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" HorizontalAlignment="Center" />
+                            </DataTemplate>
+                        </DataGridTemplateColumn.CellTemplate>
+                    </DataGridTemplateColumn>
+                    <DataGridTemplateColumn Width="22" CellTemplate="{StaticResource MarkCell}" />
+                    <DataGridTextColumn Header="Файл" Binding="{Binding RelPath}" Width="2*" />
+                    <DataGridTextColumn Header="Обозначение" Binding="{Binding Designation}" Width="*" />
+                    <DataGridTextColumn Header="Наименование" Binding="{Binding Name}" Width="*" />
+                    <DataGridTextColumn Header="Вид" Binding="{Binding KindText}" Width="Auto" />
+                    <DataGridTextColumn Header="Что изменилось" Binding="{Binding ChangeText}" Width="Auto" />
+                    <DataGridTextColumn Header="От версии" Binding="{Binding BaseText}" Width="Auto" />
+                    <DataGridTextColumn Header="Версия CAD" Binding="{Binding CadVersion}" Width="Auto">
+                        <DataGridTextColumn.ElementStyle>
+                            <Style TargetType="TextBlock">
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding IsNewerCadVersion}" Value="True">
+                                        <Setter Property="Foreground" Value="{StaticResource WarningBrush}" />
+                                        <Setter Property="FontWeight" Value="SemiBold" />
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </DataGridTextColumn.ElementStyle>
+                    </DataGridTextColumn>
+                    <DataGridTextColumn Header="Причина" Binding="{Binding Reason}" Width="1.5*" />
+                </DataGrid.Columns>
+            </DataGrid>
+            <TextBlock Grid.Row="2" Text="Нечего сдавать: в рабочей папке нет изменённых взятых документов и новых черновиков." Style="{StaticResource Muted}"
+                       HorizontalAlignment="Center" VerticalAlignment="Center" Visibility="{Binding IsEmpty, Converter={StaticResource BoolVis}}" />
+            <TextBlock Grid.Row="3" Style="{StaticResource SubHeader}" Text="Найденные проблемы (ошибки блокируют сдачу)" />
+            <Border Grid.Row="4" BorderBrush="{StaticResource BorderBrush}" BorderThickness="1" Padding="6">
+                <Grid>
+                    <ScrollViewer VerticalScrollBarVisibility="Auto">
+                        <StackPanel>
+                            <TextBlock Text="{Binding ServerMessage}" Foreground="{StaticResource ErrorBrush}" FontWeight="SemiBold" TextWrapping="Wrap"
+                                       Margin="0,0,0,4" Visibility="{Binding ServerMessage, Converter={StaticResource NullVis}}" />
+                            <ItemsControl ItemsSource="{Binding Problems}" ItemTemplate="{StaticResource ProblemTemplate}" />
+                        </StackPanel>
+                    </ScrollViewer>
+                    <TextBlock Text="Проблем не найдено." Style="{StaticResource Muted}"
+                               Visibility="{Binding Problems.Count, Converter={StaticResource CountVis}, ConverterParameter=invert}" />
+                </Grid>
+            </Border>
+            <TextBlock Grid.Row="5" Style="{StaticResource SubHeader}" Text="Комментарий к сдаче" />
+            <TextBox Grid.Row="6" Text="{Binding Comment, UpdateSourceTrigger=PropertyChanged}" AcceptsReturn="True" TextWrapping="Wrap"
+                     Height="56" VerticalContentAlignment="Top" VerticalScrollBarVisibility="Auto" />
+        </Grid>
+    </DockPanel>
+</Window>

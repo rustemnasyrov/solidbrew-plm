@@ -1,0 +1,34 @@
+<Window x:Class="SolidBrew.Client.Views.SettingsWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Style="{StaticResource AppWindow}"
+        Width="560" SizeToContent="Height" ResizeMode="NoResize" ShowInTaskbar="False">
+    <StackPanel Margin="16">
+        <TextBlock Text="Адрес сервера PDM" Style="{StaticResource SubHeader}" Margin="0,0,0,4" />
+        <TextBox Text="{Binding ServerUrl, UpdateSourceTrigger=PropertyChanged}" />
+        <TextBlock Style="{StaticResource Muted}" Text="Например: http://10.0.1.9:8088/. После смены адреса нужно войти заново." Margin="0,2,0,0" />
+
+        <TextBlock Text="Папка кэша" Style="{StaticResource SubHeader}" />
+        <DockPanel>
+            <Button DockPanel.Dock="Right" Style="{StaticResource IconButton}" Tag="&#xE838;" Content="Обзор…" Command="{Binding BrowseCacheCommand}" Margin="6,0,0,0" />
+            <TextBox Text="{Binding CacheRoot, UpdateSourceTrigger=PropertyChanged}" />
+        </DockPanel>
+        <TextBlock Style="{StaticResource Muted}" Margin="0,2,0,0">
+            <Run Text="Сюда скачиваются версии из хранилища; повторное открытие берёт файлы из кэша. По умолчанию:" />
+            <Run Text="{Binding DefaultCacheRoot, Mode=OneWay}" />
+        </TextBlock>
+
+        <TextBlock Text="CAD" Style="{StaticResource SubHeader}" />
+        <CheckBox IsChecked="{Binding EnableTestCad}" Content="Тестовый CAD (для проверки без SOLIDWORKS: файлы .tcprt, .tcasm, .tcdrw)" />
+        <TextBlock Style="{StaticResource Muted}" Margin="0,2,0,0"
+                   Text="SOLIDWORKS подключается автоматически при первой операции, которой он нужен (чтение ссылок, проверка открытия)." />
+
+        <TextBlock Text="{Binding ErrorMessage}" Foreground="{StaticResource ErrorBrush}" TextWrapping="Wrap" Margin="0,10,0,0"
+                   Visibility="{Binding ErrorMessage, Converter={StaticResource NullVis}}" />
+
+        <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,16,0,0">
+            <Button Style="{StaticResource PrimaryButton}" Tag="&#xE74E;" Content="Сохранить" Command="{Binding SaveCommand}" IsDefault="True" Margin="0" />
+            <Button Style="{StaticResource PlainButton}" Content="Отмена" Command="{Binding CancelCommand}" IsCancel="True" />
+        </StackPanel>
+    </StackPanel>
+</Window>

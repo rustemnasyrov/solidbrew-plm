@@ -10,6 +10,7 @@
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/SolidBrew.Api.Tests/SolidBrew.Api.Tests.csproj" />
+    <Project Path="tests/SolidBrew.Client.Tests/SolidBrew.Client.Tests.csproj" />
     <Project Path="tests/SolidBrew.Core.Tests/SolidBrew.Core.Tests.csproj" />
     <Project Path="tests/SolidBrew.EndToEnd.Tests/SolidBrew.EndToEnd.Tests.csproj" />
     <Project Path="tests/SolidBrew.Workspace.Tests/SolidBrew.Workspace.Tests.csproj" />

@@ -1,0 +1,139 @@
+<Window x:Class="SolidBrew.Client.Views.OpenWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:v="clr-namespace:SolidBrew.Client.Views"
+        xmlns:vm="clr-namespace:SolidBrew.Client.ViewModels"
+        Style="{StaticResource AppWindow}"
+        Width="1100" Height="760" MinWidth="760" MinHeight="500" ShowInTaskbar="False">
+    <DockPanel>
+        <Border DockPanel.Dock="Bottom" Style="{StaticResource Toolbar}" BorderThickness="0,1,0,0">
+            <DockPanel>
+                <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" Margin="12,0,0,0">
+                    <Button Style="{StaticResource PrimaryButton}" Tag="&#xE896;" Content="Открыть" Command="{Binding OpenCommand}"
+                            Visibility="{Binding IsDone, Converter={StaticResource BoolVis}, ConverterParameter=invert}" />
+                    <Button Style="{StaticResource IconButton}" Tag="&#xE838;" Content="Показать в проводнике" Command="{Binding ShowFolderCommand}"
+                            Visibility="{Binding IsDone, Converter={StaticResource BoolVis}}" />
+                    <Button Style="{StaticResource PlainButton}" Content="Закрыть" Command="{Binding CloseWindowCommand}" IsCancel="True" />
+                </StackPanel>
+                <v:BusyBar DataContext="{Binding Busy}" />
+            </DockPanel>
+        </Border>
+        <Grid Margin="12">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="*" />
+            </Grid.RowDefinitions>
+            <DockPanel Margin="0,0,0,6">
+                <Button DockPanel.Dock="Right" Style="{StaticResource IconButton}" Tag="&#xE838;" Content="Другая папка…" Command="{Binding ChangeFolderCommand}" Margin="8,0,0,0" VerticalAlignment="Top"
+                        Visibility="{Binding IsUpdate, Converter={StaticResource BoolVis}, ConverterParameter=invert}" />
+                <StackPanel>
+                    <TextBlock Style="{StaticResource Header}" Text="{Binding Title}" Margin="0" />
+                    <TextBlock Style="{StaticResource Muted}">
+                        <Run Text="Рабочая папка:" /> <Run Text="{Binding WorkRoot, Mode=OneWay}" />
+                    </TextBlock>
+                </StackPanel>
+            </DockPanel>
+            <TextBlock Grid.Row="1" Text="{Binding Summary}" TextWrapping="Wrap" FontWeight="SemiBold" Margin="0,0,0,8"
+                       Visibility="{Binding IsDone, Converter={StaticResource BoolVis}, ConverterParameter=invert}" />
+
+            <!-- План -->
+            <Grid Grid.Row="2" Visibility="{Binding IsDone, Converter={StaticResource BoolVis}, ConverterParameter=invert}">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="*" />
+                    <RowDefinition Height="Auto" />
+                </Grid.RowDefinitions>
+                <Border BorderBrush="{StaticResource BorderBrush}" BorderThickness="1" Padding="6" MaxHeight="140" Margin="0,0,0,8"
+                        Visibility="{Binding Problems.Count, Converter={StaticResource CountVis}}">
+                    <ScrollViewer VerticalScrollBarVisibility="Auto">
+                        <ItemsControl ItemsSource="{Binding Problems}" ItemTemplate="{StaticResource ProblemTemplate}" />
+                    </ScrollViewer>
+                </Border>
+                <TextBlock Grid.Row="1" Style="{StaticResource SubHeader}" Margin="0,0,0,4" Text="Конфликты: в рабочей папке уже лежат другие файлы — решите, что делать с каждым"
+                           Visibility="{Binding HasConflicts, Converter={StaticResource BoolVis}}" />
+                <DataGrid Grid.Row="2" ItemsSource="{Binding Conflicts}" MaxHeight="220" Margin="0,0,0,8"
+                          Visibility="{Binding HasConflicts, Converter={StaticResource BoolVis}}">
+                    <DataGrid.Columns>
+                        <DataGridTemplateColumn Header="Решение" Width="120">
+                            <DataGridTemplateColumn.CellTemplate>
+                                <DataTemplate>
+                                    <ComboBox ItemsSource="{x:Static vm:OpenViewModel.ResolutionOptions}" DisplayMemberPath="Text" SelectedValuePath="Value"
+                                              SelectedValue="{Binding Resolution, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                                </DataTemplate>
+                            </DataGridTemplateColumn.CellTemplate>
+                        </DataGridTemplateColumn>
+                        <DataGridTextColumn Header="Файл" Binding="{Binding RelPath}" Width="*" />
+                        <DataGridTextColumn Header="Что лежит" Binding="{Binding KindText}" Width="Auto" />
+                        <DataGridTemplateColumn Header="Вопрос" Width="2*">
+                            <DataGridTemplateColumn.CellTemplate>
+                                <DataTemplate>
+                                    <TextBlock Text="{Binding Message}" TextWrapping="Wrap" />
+                                </DataTemplate>
+                            </DataGridTemplateColumn.CellTemplate>
+                        </DataGridTemplateColumn>
+                    </DataGrid.Columns>
+                </DataGrid>
+                <DataGrid Grid.Row="3" ItemsSource="{Binding Items}">
+                    <DataGrid.Columns>
+                        <DataGridTemplateColumn Width="22" CellTemplate="{StaticResource MarkCell}" />
+                        <DataGridTextColumn Header="Файл" Binding="{Binding RelPath}" Width="2*" />
+                        <DataGridTextColumn Header="Обозначение" Binding="{Binding Designation}" Width="*" />
+                        <DataGridTextColumn Header="Наименование" Binding="{Binding Name}" Width="*" />
+                        <DataGridTextColumn Header="Версия" Binding="{Binding VersionText}" Width="Auto" />
+                        <DataGridTextColumn Header="В папке" Binding="{Binding LocalText}" Width="Auto" />
+                        <DataGridTextColumn Header="Действие" Binding="{Binding ActionText}" Width="Auto" />
+                        <DataGridTextColumn Header="Скачать" Binding="{Binding CacheText}" Width="Auto" />
+                        <DataGridTextColumn Header="Версия CAD" Binding="{Binding CadVersion}" Width="Auto" />
+                        <DataGridTextColumn Header="Блокировка" Binding="{Binding LockText}" Width="Auto" />
+                    </DataGrid.Columns>
+                </DataGrid>
+                <StackPanel Grid.Row="4" Margin="0,8,0,0">
+                    <CheckBox IsChecked="{Binding VerifyInCad}" Content="Проверить в CAD: открыть головной документ и показать, откуда реально загружены компоненты в каждой конфигурации" />
+                    <CheckBox IsChecked="{Binding OpenHeadAfter}" Margin="0,4,0,0" IsEnabled="{Binding VerifyInCad, Converter={StaticResource Not}}"
+                              Content="Открыть головной документ в CAD после раскладки (без проверки)" />
+                </StackPanel>
+            </Grid>
+
+            <!-- Итог и отчёт проверки в CAD -->
+            <Grid Grid.Row="2" Visibility="{Binding IsDone, Converter={StaticResource BoolVis}}">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="*" />
+                </Grid.RowDefinitions>
+                <TextBlock Text="{Binding ResultText}" TextWrapping="Wrap" FontWeight="SemiBold" Margin="0,0,0,8" />
+                <Border Grid.Row="1" BorderBrush="{StaticResource BorderBrush}" BorderThickness="1" Padding="6" MaxHeight="180" Margin="0,0,0,8"
+                        Visibility="{Binding ResultProblems.Count, Converter={StaticResource CountVis}}">
+                    <ScrollViewer VerticalScrollBarVisibility="Auto">
+                        <ItemsControl ItemsSource="{Binding ResultProblems}" ItemTemplate="{StaticResource ProblemTemplate}" />
+                    </ScrollViewer>
+                </Border>
+                <TextBlock Grid.Row="2" Style="{StaticResource SubHeader}" Margin="0,0,0,4"
+                           Text="Проверка в CAD: откуда загружены компоненты (по конфигурациям)"
+                           Visibility="{Binding HasCadReport, Converter={StaticResource BoolVis}}" />
+                <DataGrid Grid.Row="3" ItemsSource="{Binding CadComponents}" Visibility="{Binding HasCadReport, Converter={StaticResource BoolVis}}">
+                    <DataGrid.RowStyle>
+                        <Style TargetType="DataGridRow">
+                            <Style.Triggers>
+                                <DataTrigger Binding="{Binding InsideWorkRoot}" Value="False">
+                                    <Setter Property="Foreground" Value="{StaticResource ErrorBrush}" />
+                                    <Setter Property="FontWeight" Value="SemiBold" />
+                                </DataTrigger>
+                            </Style.Triggers>
+                        </Style>
+                    </DataGrid.RowStyle>
+                    <DataGrid.Columns>
+                        <DataGridTextColumn Header="Конфигурация" Binding="{Binding Configuration}" Width="Auto" />
+                        <DataGridTextColumn Header="Компонент" Binding="{Binding Name}" Width="*" />
+                        <DataGridTextColumn Header="Загружен из" Binding="{Binding LoadedPath}" Width="2*" />
+                        <DataGridTextColumn Header="" Binding="{Binding WhereText}" Width="Auto" />
+                    </DataGrid.Columns>
+                </DataGrid>
+            </Grid>
+        </Grid>
+    </DockPanel>
+</Window>
