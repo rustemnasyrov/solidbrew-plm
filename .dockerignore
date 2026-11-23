@@ -1,0 +1,6 @@
+**
+!src/
+!src/SolidBrew.Api/
+!src/SolidBrew.Api/**
+src/SolidBrew.Api/bin/
+src/SolidBrew.Api/obj/
