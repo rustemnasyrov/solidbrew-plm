@@ -1,15 +1,21 @@
 <Project Sdk="Microsoft.NET.Sdk.Web">
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
-    <ImplicitUsings>enable</ImplicitUsings>
-    <Nullable>enable</Nullable>
+    <RootNamespace>SolidBrew.Api</RootNamespace>
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="Npgsql" Version="10.0.0" />
+    <PackageReference Include="Dapper" Version="2.1.66" />
     <PackageReference Include="AWSSDK.S3" Version="4.1.2" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\SolidBrew.Core\SolidBrew.Core.csproj" />
   </ItemGroup>
+  <ItemGroup>
+    <!-- Миграции БД: пронумерованные SQL-скрипты, применяются при старте по порядку. -->
+    <EmbeddedResource Include="Db\Migrations\*.sql" LogicalName="Migrations.%(Filename)%(Extension)" />
+  </ItemGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="SolidBrew.Api.Tests" />
+  </ItemGroup>
 </Project>
-

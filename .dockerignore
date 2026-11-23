@@ -1,6 +1,9 @@
 **
+!Directory.Build.props
 !src/
+!src/SolidBrew.Core/
+!src/SolidBrew.Core/**
 !src/SolidBrew.Api/
 !src/SolidBrew.Api/**
-src/SolidBrew.Api/bin/
-src/SolidBrew.Api/obj/
+**/bin/
+**/obj/
