@@ -1,0 +1,20 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/SolidBrew.Adapters.SolidWorks/SolidBrew.Adapters.SolidWorks.csproj" />
+    <Project Path="src/SolidBrew.Adapters.TestCad/SolidBrew.Adapters.TestCad.csproj" />
+    <Project Path="src/SolidBrew.Api/SolidBrew.Api.csproj" />
+    <Project Path="src/SolidBrew.Cli/SolidBrew.Cli.csproj" />
+    <Project Path="src/SolidBrew.Client/SolidBrew.Client.csproj" />
+    <Project Path="src/SolidBrew.Core/SolidBrew.Core.csproj" />
+    <Project Path="src/SolidBrew.Workspace/SolidBrew.Workspace.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/SolidBrew.Api.Tests/SolidBrew.Api.Tests.csproj" />
+    <Project Path="tests/SolidBrew.Core.Tests/SolidBrew.Core.Tests.csproj" />
+    <Project Path="tests/SolidBrew.EndToEnd.Tests/SolidBrew.EndToEnd.Tests.csproj" />
+    <Project Path="tests/SolidBrew.Workspace.Tests/SolidBrew.Workspace.Tests.csproj" />
+  </Folder>
+  <Folder Name="/tools/">
+    <Project Path="tools/SwProbe/SwProbe.csproj" />
+  </Folder>
+</Solution>

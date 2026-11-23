@@ -8,4 +8,8 @@
     <PackageReference Include="Npgsql" Version="10.0.0" />
     <PackageReference Include="AWSSDK.S3" Version="4.1.2" />
   </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\SolidBrew.Core\SolidBrew.Core.csproj" />
+  </ItemGroup>
 </Project>
+
