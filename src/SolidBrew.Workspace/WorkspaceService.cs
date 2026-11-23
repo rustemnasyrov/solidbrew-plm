@@ -108,7 +108,13 @@ public sealed partial class WorkspaceService
         Adapters.Get(cad) ?? Adapters.FindFor(path) ??
         throw new WorkspaceException($"Нет адаптера CAD для документа «{Path.GetFileName(path)}» ({cad}). Установите поддержку этого CAD.");
 
-    /// <summary>Сведения о документах с сервера: сначала поиском по проекту, недостающие — по одному.</summary>
+    /// <summary>Наибольший limit поиска, который принимает сервер (больше он молча ограничивает).</summary>
+    internal const int ServerSearchLimit = 2000;
+
+    /// <summary>
+    /// Сведения о документах с сервера: сначала поиском по проекту (сервер отдаёт не больше <see cref="ServerSearchLimit"/>),
+    /// недостающие — по одному.
+    /// </summary>
     internal async Task<Dictionary<Guid, DocumentSummaryDto>> FetchSummariesAsync(Guid projectId, IEnumerable<Guid> ids, CancellationToken ct)
     {
         var wanted = new HashSet<Guid>(ids);
@@ -116,7 +122,7 @@ public sealed partial class WorkspaceService
         if (wanted.Count == 0) return result;
         if (projectId != Guid.Empty && wanted.Count > 2)
         {
-            var found = await Api.SearchDocumentsAsync(projectId: projectId, includeUnused: true, limit: 100000, ct: ct).ConfigureAwait(false);
+            var found = await Api.SearchDocumentsAsync(projectId: projectId, includeUnused: true, limit: ServerSearchLimit, ct: ct).ConfigureAwait(false);
             foreach (var d in found)
             {
                 if (wanted.Contains(d.Id)) result[d.Id] = d;

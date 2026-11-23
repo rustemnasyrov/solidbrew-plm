@@ -103,7 +103,7 @@ namespace SolidBrew.Core.Api
         /// <summary>DELETE /api/admin/locks/{documentId} — принудительно снять чужую блокировку.</summary>
         Task ForceUnlockAsync(Guid documentId, CancellationToken ct = default);
 
-        /// <summary>GET /api/admin/settings.</summary>
+        /// <summary>GET /api/admin/settings. Администратор получает все настройки, остальные — только ключи «cad.*» (рабочие версии CAD).</summary>
         Task<SettingsDto> GetSettingsAsync(CancellationToken ct = default);
 
         /// <summary>PUT /api/admin/settings. Возвращает сохранённые настройки.</summary>

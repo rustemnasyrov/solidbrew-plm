@@ -33,6 +33,8 @@ public sealed class FakePdmServer
     public Func<string, byte[], byte[]>? DownloadTamper { get; set; }
     /// <summary>Отказ сдачи: вернуть исключение — сдача не выполняется.</summary>
     public Func<CheckinRequest, PdmApiException?>? CheckinFailure { get; set; }
+    /// <summary>Предел числа записей поиска, как у настоящего сервера (он ограничивает limit сверху).</summary>
+    public int SearchLimitCap { get; set; } = 2000;
 
     public UserDto AddUser(string login, string displayName, UserRole role = UserRole.Designer)
     {
@@ -415,7 +417,7 @@ public sealed class FakePdmApi : IPdmApi
             .Where(d => includeUnused || d.Status == DocumentStatus.Active)
             .Select(_s.Summary)
             .Where(d => q == null || d.RelPath.Contains(q, StringComparison.OrdinalIgnoreCase) || (d.Designation ?? "").Contains(q, StringComparison.OrdinalIgnoreCase))
-            .Take(limit ?? 50).ToList());
+            .Take(Math.Clamp(limit ?? 50, 1, _s.SearchLimitCap)).ToList());
 
     public Task<DocumentDetailDto> GetDocumentAsync(Guid id, CancellationToken ct = default) => Run(() =>
     {

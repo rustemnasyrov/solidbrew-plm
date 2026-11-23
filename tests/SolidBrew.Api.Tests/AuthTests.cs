@@ -152,4 +152,34 @@ public sealed class AuthTests(PdmServerFixture fx)
         saved = await admin.UpdateSettingsAsync(new SettingsDto { Values = { [key] = "" } });
         Assert.False(saved.Values.ContainsKey(key));
     }
+
+    [Theory]
+    [InlineData(UserRole.Designer)]
+    [InlineData(UserRole.Reader)]
+    public async Task Settings_NonAdminReadsOnlyCadKeys_AndCannotWrite(UserRole role)
+    {
+        var admin = await fx.AdminAsync();
+        var cadKey = SettingKeys.WorkingVersion(fx.Unique("cad").Replace("-", ""));
+        var privateKey = fx.Unique("private.") + ".secret";
+        await admin.UpdateSettingsAsync(new SettingsDto { Values = { [cadKey] = "2022", [privateKey] = "x" } });
+        try
+        {
+            var (user, _) = await fx.NewUserAsync(role, admin);
+            var visible = await user.GetSettingsAsync();
+            Assert.Equal("2022", visible.Values[cadKey]);
+            Assert.False(visible.Values.ContainsKey(privateKey));
+            Assert.All(visible.Values.Keys, k => Assert.StartsWith("cad.", k));
+
+            var all = await admin.GetSettingsAsync();
+            Assert.Equal("x", all.Values[privateKey]);
+
+            var denied = await Assert.ThrowsAsync<PdmApiException>(() => user.UpdateSettingsAsync(new SettingsDto { Values = { [cadKey] = "2030" } }));
+            Assert.Equal(403, denied.StatusCode);
+            Assert.Equal("2022", (await admin.GetSettingsAsync()).Values[cadKey]);
+        }
+        finally
+        {
+            await admin.UpdateSettingsAsync(new SettingsDto { Values = { [cadKey] = "", [privateKey] = "" } });
+        }
+    }
 }

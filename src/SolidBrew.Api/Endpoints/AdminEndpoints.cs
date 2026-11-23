@@ -26,11 +26,15 @@ internal static partial class AdminEndpoints
         app.MapPost(ApiRoutes.Templates.AdminUsers, CreateUserAsync);
         app.MapPut(ApiRoutes.Templates.AdminUser, UpdateUserAsync);
 
+        // Чтение: администратор видит все настройки, остальные — только общедоступные ключи «cad.*»
+        // (рабочие версии CAD нужны клиенту каждого конструктора для предупреждений). Изменение — только администратор.
         app.MapGet(ApiRoutes.Templates.AdminSettings, async (CurrentUser user, NpgsqlDataSource db, CancellationToken ct) =>
         {
-            if (user.RequireAdmin() is { } denied) return denied;
             await using var connection = await db.OpenConnectionAsync(ct);
-            return Results.Ok(await LoadSettingsAsync(connection));
+            var settings = await LoadSettingsAsync(connection);
+            if (!user.IsAdmin)
+                settings.Values = settings.Values.Where(p => IsPublicSetting(p.Key)).ToDictionary(p => p.Key, p => p.Value);
+            return Results.Ok(settings);
         });
         app.MapPut(ApiRoutes.Templates.AdminSettings, UpdateSettingsAsync);
 
@@ -174,6 +178,9 @@ internal static partial class AdminEndpoints
         await tx.CommitAsync(ct);
         return Results.Ok(await LoadSettingsAsync(connection));
     }
+
+    /// <summary>Настройка, которую может читать любой вошедший пользователь.</summary>
+    internal static bool IsPublicSetting(string key) => key.StartsWith("cad.", StringComparison.Ordinal);
 
     private static IResult? ValidatePassword(string? password) =>
         password is null || password.Length < PasswordHasher.MinPasswordLength
