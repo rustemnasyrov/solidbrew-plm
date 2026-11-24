@@ -6,7 +6,7 @@
 param([Parameter(Mandatory = $true)][string]$Job)
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [Text.Encoding]::UTF8
-$OutputEncoding = [Text.Encoding]::UTF8
+$OutputEncoding = New-Object Text.UTF8Encoding($false)
 $utf8 = New-Object Text.UTF8Encoding($false)
 $spec = [IO.File]::ReadAllText($Job, $utf8) | ConvertFrom-Json
 $out = [IO.Path]::ChangeExtension($Job, '.out.txt')
@@ -15,7 +15,11 @@ $code = 1
 try {
     if ($spec.cwd) { Set-Location -LiteralPath $spec.cwd }
     $argList = @($spec.args)
-    if ($null -ne $spec.stdin) {
+    if ($spec.script) {
+        # Скрипт PowerShell выполняется в этом же процессе (без вложенного powershell.exe и его CLIXML в потоке ошибок).
+        $global:LASTEXITCODE = 0
+        & ([scriptblock]::Create([string]$spec.script)) *> $out
+    } elseif ($null -ne $spec.stdin) {
         $text = ($spec.stdin | Out-String) -replace "`r?`n$", ''
         $text | & $spec.exe @argList *> $out
     } else {

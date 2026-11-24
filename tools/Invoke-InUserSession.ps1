@@ -13,7 +13,9 @@
 #>
 [CmdletBinding()]
 param(
-    [Parameter(Mandatory = $true)][string]$Exe,
+    [string]$Exe,
+    # Скрипт PowerShell вместо Exe: выполняется прямо в процессе исполнителя в сессии пользователя.
+    [string]$Script,
     [string[]]$Arguments = @(),
     [string]$WorkingDirectory,
     [string]$StdIn,
@@ -27,7 +29,8 @@ $utf8 = New-Object Text.UTF8Encoding($false)
 $localJobs = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\.swjobs\session'))
 New-Item -ItemType Directory -Force -Path $localJobs | Out-Null
 $id = '{0:yyyyMMdd-HHmmss}-{1}' -f (Get-Date), ([guid]::NewGuid().ToString('N').Substring(0, 6))
-$spec = [ordered]@{ exe = $Exe; args = @($Arguments); cwd = $WorkingDirectory; stdin = $StdIn }
+if (-not $Exe -and -not $Script) { throw 'Укажите -Exe или -Script.' }
+$spec = [ordered]@{ exe = $Exe; args = @($Arguments); cwd = $WorkingDirectory; stdin = $StdIn; script = $Script }
 [IO.File]::WriteAllText((Join-Path $localJobs "$id.json"), ($spec | ConvertTo-Json -Depth 3), $utf8)
 
 $remoteJob = "$RemoteProjectRoot\.swjobs\session\$id.json"
