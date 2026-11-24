@@ -181,7 +181,7 @@ public sealed partial class WorkspaceService
                 continue;
             }
             var full = RelPath.Combine(root, entry.RelPath);
-            var changed = File.Exists(full) && await FileOps.HashAsync(full, ct).ConfigureAwait(false) != entry.Sha256;
+            var changed = File.Exists(full) && await FileOps.HashAsync(full, ct).ConfigureAwait(false) != entry.LocalSha;
             plan.Items.Add(new UndoCheckOutItem
             {
                 DocumentId = id,
@@ -240,8 +240,15 @@ public sealed partial class WorkspaceService
             {
                 await Cache.EnsureAsync(Api, new[] { new CacheObject(entry.Sha256, entry.Size) }, progress, ct).ConfigureAwait(false);
                 FileOps.PlaceCopy(Cache.PathOf(entry.Sha256), full, readOnly: true);
+                entry.PlacedSha256 = null;
                 entry.Stamp = FileOps.StampOf(full);
                 result.Reverted.Add(entry.RelPath);
+                // В файле из кэша — ссылки, как опубликованы: вернуть их пути в зависимости и переписать на рабочую папку.
+                if (entry.Deps.Count > 0)
+                {
+                    await RestorePublishedRefPathsAsync(entry, ct).ConfigureAwait(false);
+                    await RewriteReferencesAsync(root, state, new[] { entry }, null, result.Problems, progress, ct).ConfigureAwait(false);
+                }
             }
             else if (File.Exists(full))
             {
@@ -256,5 +263,25 @@ public sealed partial class WorkspaceService
         result.Success = !result.Problems.Any(p => p.IsBlocking);
         result.Message = $"Взятие отменено: {result.Unlocked.Count}" + (result.Reverted.Count > 0 ? $", возвращено к сданной версии: {result.Reverted.Count}." : ".");
         return result;
+    }
+
+    /// <summary>Пути ссылок зависимостей — как в опубликованной версии (файл только что положен из кэша).</summary>
+    private async Task RestorePublishedRefPathsAsync(WorkspaceEntry entry, CancellationToken ct)
+    {
+        VersionDto? version;
+        try
+        {
+            var detail = await Api.GetDocumentAsync(entry.DocumentId, ct).ConfigureAwait(false);
+            version = detail.Versions.FirstOrDefault(v => v.Number == entry.Version);
+        }
+        catch (PdmApiException)
+        {
+            version = null;
+        }
+        if (version == null) return;
+        entry.Deps = version.References
+            .Where(r => r.ChildDocumentId != null && r.ChildVersion != null && r.ChildDocumentId != entry.DocumentId)
+            .Select(r => new WorkspaceDependency { DocumentId = r.ChildDocumentId!.Value, Version = r.ChildVersion!.Value, RefPath = r.RefPath })
+            .ToList();
     }
 }

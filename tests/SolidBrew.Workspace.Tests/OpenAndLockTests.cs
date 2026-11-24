@@ -31,10 +31,14 @@ public class OpenTests : IDisposable
         foreach (var e in p.State.Entries)
         {
             Assert.True(Client.IsReadOnly(p.File(e.RelPath)), e.RelPath);
-            Assert.Equal(e.Sha256, Client.Hash(p.File(e.RelPath)));
+            Assert.Equal(e.PlacedSha256 ?? e.Sha256, Client.Hash(p.File(e.RelPath)));
+            Assert.Equal(e.Deps.Count > 0, e.PlacedSha256 != null); // ссылки сборок переписаны, детали — как в кэше
         }
+        Assert.Equal(new[] { "Сборки/Узел.tcasm", "Изделие.tcasm" }.OrderBy(x => x), r.ReferencesRewritten.OrderBy(x => x));
         var asm = p.State.FindByPath("Изделие.tcasm")!;
         Assert.Equal(3, asm.Deps.Count);
+        Assert.Contains(asm.Deps, d => d.RefPath == p.File("Детали/Корпус.tcprt"));
+        Assert.All(asm.Deps, d => Assert.StartsWith(p.WorkRoot + "\\", d.RefPath));
 
         // Повторное открытие: ничего не скачивается и не перезаписывается.
         var downloads = _env.Server.DownloadCount;
@@ -42,6 +46,7 @@ public class OpenTests : IDisposable
         Assert.All(plan2.Items, i => Assert.Equal(OpenAction.AlreadyInPlace, i.Action));
         var r2 = await p.Service.ExecuteOpenAsync(plan2);
         Assert.Empty(r2.Placed);
+        Assert.Empty(r2.ReferencesRewritten);
         Assert.Equal(downloads, _env.Server.DownloadCount);
 
         // Открытие в другую папку с тем же кэшем — из кэша.

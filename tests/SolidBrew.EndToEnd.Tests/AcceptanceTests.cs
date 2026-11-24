@@ -86,7 +86,7 @@ public sealed class AcceptanceTests(ServerFixture fx) : IDisposable
 
         // Отсутствующая и неоднозначная ссылки — отдельными категориями и отдельными проблемами.
         var missing = Assert.Single(report.ByCategory(ImportReferenceCategory.Missing));
-        Assert.Equal(@"Покупные\Двигатель.tcprt", missing.SavedPath);
+        Assert.Equal(kit.Full(SourceKit.MissingMotor), missing.SavedPath);
         var ambiguous = Assert.Single(report.ByCategory(ImportReferenceCategory.Ambiguous));
         Assert.Equal("Шайба.tcprt", ambiguous.FileName);
         Assert.Equal(2, ambiguous.Candidates.Count);
@@ -127,7 +127,7 @@ public sealed class AcceptanceTests(ServerFixture fx) : IDisposable
         }
 
         var headKit = await a.Api.GetKitAsync(result.HeadDocumentId, 1);
-        Assert.Contains(headKit.Unresolved, u => u.RefPath == @"Покупные\Двигатель.tcprt");
+        Assert.Contains(headKit.Unresolved, u => u.RefPath == kit.Full(SourceKit.MissingMotor));
         Assert.Contains(headKit.Items, i => i.RelPath == SourceKit.Washer);
         Assert.DoesNotContain(headKit.Items, i => i.RelPath.Contains("Архив", StringComparison.Ordinal));
 
@@ -188,6 +188,49 @@ public sealed class AcceptanceTests(ServerFixture fx) : IDisposable
         Assert.Equal(0, r5.Downloaded);
         AssertLoadedFromWorkspace(r5, bOld.WorkRoot, 4);
         Assert.Equal(downloads, b.Counter.Downloads);
+    }
+
+    [Fact]
+    public async Task Criterion2_SourceFolderStillAvailable_DrawingsAndSubfolderPartsLoadFromWorkspace()
+    {
+        // Исходная папка на месте: без переписывания ссылок CAD тихо загрузил бы модели из неё
+        // (чертежи в «Чертежи/», детали в подпапке «Детали/» для сборки из папки изделия).
+        var a = await Computer.NewAsync(fx, _dir, "ivanov");
+        var imp = await ImportAsync(a);
+        Assert.True(Directory.Exists(imp.Kit.Root));
+        var before = imp.Kit.Snapshot();
+
+        var b = await Computer.NewAsync(fx, _dir, "petrov");
+        var r = await b.OpenAsync(imp.Head, verify: true);
+        AssertLoadedFromWorkspace(r, b.WorkRoot, 4, "Узел.tcasm", "Вал.tcprt", "Болт.tcprt", "Корпус.tcprt");
+        Assert.Contains(SourceKit.Head, r.ReferencesRewritten);
+        Assert.Contains(SourceKit.SubAssembly, r.ReferencesRewritten);
+        Assert.DoesNotContain(SourceKit.Body, r.ReferencesRewritten); // у детали нет ссылок
+
+        // Чертежи (головной документ в «Чертежи/») — тоже из рабочей папки.
+        foreach (var drawing in new[] { SourceKit.HeadDrawing, SourceKit.SubDrawing, SourceKit.BodyDrawing })
+        {
+            var rd = await b.OpenAsync(imp[drawing], verify: true);
+            Assert.True(rd.CadReport!.Ok, drawing + ": " + string.Join("; ", rd.CadReport.Problems));
+            Assert.NotEmpty(rd.CadReport.Configurations.SelectMany(c => c.Components));
+            Assert.All(rd.CadReport.Configurations.SelectMany(c => c.Components), comp => Assert.True(comp.InsideWorkRoot, comp.LoadedPath));
+            Assert.Contains(drawing, rd.ReferencesRewritten);
+        }
+
+        // Переписанные ссылки — не правка: всё «не изменён», сдавать нечего; в файлах нет путей исходной папки.
+        var status = await b.Service.GetStatusAsync(b.WorkRoot);
+        Assert.All(status.Files, f => Assert.Equal(LocalFileState.Unchanged, f.Local));
+        Assert.Empty((await b.Service.PrepareCheckinAsync(b.WorkRoot)).Items);
+        foreach (var e in b.State.Entries)
+        {
+            Assert.DoesNotContain(imp.Kit.Root, File.ReadAllText(b.File(e.RelPath)), StringComparison.OrdinalIgnoreCase);
+            Assert.True(Computer.IsReadOnly(b.File(e.RelPath)), e.RelPath);
+            Assert.All(e.Deps, d => Assert.StartsWith(b.WorkRoot + "\\", d.RefPath, StringComparison.OrdinalIgnoreCase));
+        }
+
+        // Исходники не тронуты.
+        var after = imp.Kit.Snapshot();
+        foreach (var (path, state) in before) Assert.Equal(state, after[path]);
     }
 
     // ------------------------------------------------------------------ 3

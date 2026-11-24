@@ -55,7 +55,10 @@ public sealed class TestEnv : IDisposable
     /// <summary>
     /// Готовый проект «на сетевом диске»: сборка с подсборкой, общей деталью, двумя конфигурациями и чертежами.
     /// src/Изделие.tcasm → Сборки/Узел.tcasm, Детали/Корпус.tcprt, Детали/Болт.tcprt; Узел → Детали/Вал.tcprt, Детали/Болт.tcprt;
-    /// все ссылки относительные (переносимы между компьютерами); Чертежи/Корпус.tcdrw → ..\Детали\Корпус.tcprt.
+    /// Чертежи/Корпус.tcdrw → Детали/Корпус.tcprt, Чертежи/Изделие.tcdrw → Изделие.tcasm.
+    /// Как в SOLIDWORKS, все ссылки записаны <b>абсолютными путями исходной папки</b>: после раскладки в рабочую папку
+    /// компоненты из подпапок (детали для сборки из корня, модели для чертежей) находятся только по этим путям —
+    /// пока клиент не переписал ссылки, тестовый CAD грузит их из исходной папки или не находит вовсе.
     /// </summary>
     public string CreateSourceProject(string folder = "src")
     {
@@ -65,12 +68,12 @@ public sealed class TestEnv : IDisposable
         TestCadWriter.Write(P(@"Детали\Вал.tcprt"), new TestCadDocument().Prop("Обозначение", "АБВ.002").Prop("Наименование", "Вал").Geom("cyl 5 100"));
         TestCadWriter.Write(P(@"Детали\Болт.tcprt"), new TestCadDocument().Prop("Обозначение", "ГОСТ 7798 М8").Geom("bolt M8"));
         TestCadWriter.Write(P(@"Сборки\Узел.tcasm"), new TestCadDocument().Prop("Обозначение", "АБВ.100").Prop("Наименование", "Узел")
-            .Ref(@"..\Детали\Вал.tcprt", @"..\Детали\Болт.tcprt"));
+            .Ref(P(@"Детали\Вал.tcprt"), P(@"Детали\Болт.tcprt")));
         TestCadWriter.Write(P("Изделие.tcasm"), new TestCadDocument().Config("Исп1", "Исп2")
             .Prop("Обозначение", "АБВ.000").Prop("Наименование", "Изделие").Prop("Масса", "12", "Исп2")
-            .Ref(@"Сборки\Узел.tcasm", @"Детали\Корпус.tcprt", @"Детали\Болт.tcprt"));
-        TestCadWriter.Write(P(@"Чертежи\Корпус.tcdrw"), new TestCadDocument().Prop("Обозначение", "АБВ.001 СБ").Ref(@"..\Детали\Корпус.tcprt"));
-        TestCadWriter.Write(P(@"Чертежи\Изделие.tcdrw"), new TestCadDocument().Prop("Обозначение", "АБВ.000 СБ").Ref(@"..\Изделие.tcasm"));
+            .Ref(P(@"Сборки\Узел.tcasm"), P(@"Детали\Корпус.tcprt"), P(@"Детали\Болт.tcprt")));
+        TestCadWriter.Write(P(@"Чертежи\Корпус.tcdrw"), new TestCadDocument().Prop("Обозначение", "АБВ.001 СБ").Ref(P(@"Детали\Корпус.tcprt")));
+        TestCadWriter.Write(P(@"Чертежи\Изделие.tcdrw"), new TestCadDocument().Prop("Обозначение", "АБВ.000 СБ").Ref(P("Изделие.tcasm")));
         // Чертёж, не относящийся к комплекту, — не должен попасть в постановку.
         TestCadWriter.Write(P(@"Чертежи\Чужой.tcdrw"), new TestCadDocument().Ref(@"Q:\Другой\Чужая.tcprt"));
         return src;

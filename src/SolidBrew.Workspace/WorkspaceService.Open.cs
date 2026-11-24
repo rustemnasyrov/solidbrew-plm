@@ -283,7 +283,8 @@ public sealed partial class WorkspaceService
 
     /// <summary>
     /// Выполнить открытие: докачать недостающее в кэш, разложить файлы (молча ничего не перезаписывается —
-    /// только по решениям в <see cref="OpenConflict.Resolution"/>), выставить атрибуты, записать состояние.
+    /// только по решениям в <see cref="OpenConflict.Resolution"/>), выставить атрибуты, переписать ссылки документов на пути
+    /// рабочей папки (<see cref="OpenResult.ReferencesRewritten"/>; не удалось — предупреждение), записать состояние.
     /// <paramref name="verifyInCad"/> — затем открыть головной документ в CAD и проверить источники компонентов.
     /// </summary>
     public async Task<OpenResult> ExecuteOpenAsync(OpenPlan plan, bool verifyInCad = false,
@@ -337,6 +338,7 @@ public sealed partial class WorkspaceService
         result.Downloaded = await Cache.EnsureAsync(Api, toWrite.Select(i => new CacheObject(i.Sha256, i.Size)), progress, ct).ConfigureAwait(false);
 
         var n = 0;
+        var touched = new List<WorkspaceEntry>();
         foreach (var item in plan.Items)
         {
             ct.ThrowIfCancellationRequested();
@@ -362,22 +364,28 @@ public sealed partial class WorkspaceService
                 FileOps.SetReadOnly(item.FullPath, !item.LockedByMe);
             }
 
+            // Уже лежащий файл (та же версия, без правок) мог быть переписан раньше: его ссылки и хеш раскладки сохраняются.
+            var previous = write ? null : state.Entries.FirstOrDefault(e =>
+                RelPath.Key(e.RelPath) == RelPath.Key(item.RelPath) && e.DocumentId == item.DocumentId && e.Version == item.Version && e.Sha256 == item.Sha256);
             state.Entries.RemoveAll(e => RelPath.Key(e.RelPath) == RelPath.Key(item.RelPath) || e.DocumentId == item.DocumentId);
-            state.Entries.Add(new WorkspaceEntry
+            var entry = new WorkspaceEntry
             {
                 RelPath = item.RelPath,
                 DocumentId = item.DocumentId,
                 Version = item.Version,
                 Sha256 = item.Sha256,
+                PlacedSha256 = previous?.PlacedSha256,
                 Size = item.Size,
                 Cad = item.Cad,
                 Kind = item.Kind,
                 Designation = item.Designation,
                 Name = item.Name,
-                Deps = item.Deps.ToList(),
+                Deps = CloneDeps(previous?.Deps ?? item.Deps),
                 LockedByMe = item.LockedByMe,
                 Stamp = FileOps.StampOf(item.FullPath),
-            });
+            };
+            state.Entries.Add(entry);
+            touched.Add(entry);
         }
 
         if (!plan.IsUpdate)
@@ -387,9 +395,18 @@ public sealed partial class WorkspaceService
         }
         state.Save(root);
 
+        // Ссылки — на пути рабочей папки (до открытия в CAD): и для разложенных, и для уже лежавших (повтор после ошибки).
+        var kitPaths = plan.Items.ToDictionary(i => i.DocumentId, i => i.RelPath);
+        var rewriteProblems = new List<PlanProblem>();
+        result.ReferencesRewritten.AddRange(await RewriteReferencesAsync(root, state, touched, kitPaths, rewriteProblems, progress, ct).ConfigureAwait(false));
+        result.Problems.AddRange(rewriteProblems);
+        if (result.ReferencesRewritten.Count > 0 || rewriteProblems.Count > 0) state.Save(root);
+
         result.Success = true;
         result.Message = $"Разложено файлов: {result.Placed.Count}, скачано: {result.Downloaded}" +
                          (result.Kept.Count > 0 ? $", оставлено как есть: {result.Kept.Count}." : ".");
+        if (result.ReferencesRewritten.Count > 0) result.Message += $" Ссылки переписаны на рабочую папку: {result.ReferencesRewritten.Count}.";
+        if (rewriteProblems.Count > 0) result.Message += $" Ссылки не переписаны: {rewriteProblems.Count} — CAD может загрузить компоненты по старым путям.";
 
         if (verifyInCad)
         {

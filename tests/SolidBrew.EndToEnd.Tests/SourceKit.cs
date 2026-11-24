@@ -7,12 +7,15 @@ namespace SolidBrew.EndToEnd.Tests;
 /// двумя исполнениями головной сборки и чертежами головной сборки, подсборки и детали в отдельной папке.
 /// <code>
 /// Сеть\Изделие\Изделие.tcasm      (Исп1, Исп2) → Сборки\Узел.tcasm, Детали\Корпус.tcprt, Детали\Болт.tcprt
-/// Сеть\Изделие\Сборки\Узел.tcasm  → ..\Детали\Вал.tcprt, ..\Детали\Болт.tcprt
+/// Сеть\Изделие\Сборки\Узел.tcasm  → Детали\Вал.tcprt, Детали\Болт.tcprt
 /// Сеть\Изделие\Детали\Болт.tcprt  (М8, М10) — общая деталь сборки и подсборки
-/// Сеть\Чертежи\Изделие.tcdrw → ..\Изделие\Изделие.tcasm; Узел.tcdrw → подсборка; Корпус.tcdrw → деталь
+/// Сеть\Чертежи\Изделие.tcdrw → Изделие\Изделие.tcasm; Узел.tcdrw → подсборка; Корпус.tcdrw → деталь
 /// Сеть\Чертежи\Чужой.tcdrw — чертёж другого изделия, не должен попасть в постановку
 /// </code>
-/// С проблемами (<see cref="Create"/> с withProblems): головная сборка ссылается на несуществующий «Покупные\Двигатель.tcprt»,
+/// Как в SOLIDWORKS, ссылки записаны <b>абсолютными путями исходной папки</b> (<see cref="Full"/>): сборка из папки изделия
+/// ссылается на детали в подпапках, чертежи — на модели из другой папки. Без переписывания ссылок при раскладке тестовый CAD
+/// загрузит такие компоненты из исходной папки (тихая подмена) или не найдёт их, если её нет.
+/// С проблемами (<see cref="Create"/> с withProblems): головная сборка ссылается на несуществующий «Изделие\Покупные\Двигатель.tcprt»,
 /// подсборка — на «D:\Старый проект\Шайба.tcprt», а в папке поиска два файла «Шайба.tcprt» (Детали и Архив).
 /// </summary>
 public sealed class SourceKit
@@ -26,6 +29,8 @@ public sealed class SourceKit
     public const string HeadDrawing = "Чертежи/Изделие.tcdrw";
     public const string SubDrawing = "Чертежи/Узел.tcdrw";
     public const string BodyDrawing = "Чертежи/Корпус.tcdrw";
+    /// <summary>Отсутствующий файл, на который ссылается головная сборка комплекта «с проблемами».</summary>
+    public const string MissingMotor = "Изделие/Покупные/Двигатель.tcprt";
 
     public const string HeadDesignation = "АБВ.000";
 
@@ -51,13 +56,13 @@ public sealed class SourceKit
             .Prop("Обозначение", "Болт М8 ГОСТ 7798-70", "М8").Prop("Обозначение", "Болт М10 ГОСТ 7798-70", "М10")
             .Geom("bolt M8|M10"));
 
-        var sub = new TestCadDocument().Prop("Обозначение", "АБВ.100").Prop("Наименование", "Узел").Ref(@"..\Детали\Вал.tcprt", @"..\Детали\Болт.tcprt");
+        var sub = new TestCadDocument().Prop("Обозначение", "АБВ.100").Prop("Наименование", "Узел").Ref(kit.Full(Shaft), kit.Full(Bolt));
         var head = new TestCadDocument().Config("Исп1", "Исп2")
             .Prop("Обозначение", HeadDesignation).Prop("Наименование", "Изделие").Prop("Масса", "12,5", "Исп2")
-            .Ref(@"Сборки\Узел.tcasm", @"Детали\Корпус.tcprt", @"Детали\Болт.tcprt");
+            .Ref(kit.Full(SubAssembly), kit.Full(Body), kit.Full(Bolt));
         if (withProblems)
         {
-            head.Ref(@"Покупные\Двигатель.tcprt");
+            head.Ref(kit.Full(MissingMotor));
             sub.Ref(@"D:\Старый проект\Шайба.tcprt");
             W(Washer, new TestCadDocument().Prop("Обозначение", "АБВ.003").Prop("Наименование", "Шайба").Geom("washer 8"));
             W("Изделие/Архив/Шайба.tcprt", new TestCadDocument().Prop("Обозначение", "АБВ.003 (старая)").Geom("washer old"));
@@ -65,9 +70,9 @@ public sealed class SourceKit
         W(SubAssembly, sub);
         W(Head, head);
 
-        W(HeadDrawing, new TestCadDocument().Prop("Обозначение", HeadDesignation + " СБ").Ref(@"..\Изделие\Изделие.tcasm").Geom("sheet A1"));
-        W(SubDrawing, new TestCadDocument().Prop("Обозначение", "АБВ.100 СБ").Ref(@"..\Изделие\Сборки\Узел.tcasm").Geom("sheet A2"));
-        W(BodyDrawing, new TestCadDocument().Prop("Обозначение", "АБВ.001 Ч").Ref(@"..\Изделие\Детали\Корпус.tcprt").Geom("sheet A3"));
+        W(HeadDrawing, new TestCadDocument().Prop("Обозначение", HeadDesignation + " СБ").Ref(kit.Full(Head)).Geom("sheet A1"));
+        W(SubDrawing, new TestCadDocument().Prop("Обозначение", "АБВ.100 СБ").Ref(kit.Full(SubAssembly)).Geom("sheet A2"));
+        W(BodyDrawing, new TestCadDocument().Prop("Обозначение", "АБВ.001 Ч").Ref(kit.Full(Body)).Geom("sheet A3"));
         W("Чертежи/Чужой.tcdrw", new TestCadDocument().Prop("Обозначение", "ГДЕ.000").Ref(@"Q:\Другое изделие\Чужая.tcasm"));
         return kit;
     }

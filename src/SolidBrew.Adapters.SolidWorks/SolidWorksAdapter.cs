@@ -329,6 +329,12 @@ public sealed class SolidWorksAdapter : ICadAdapter, IDisposable
 
     // ------------------------------------------------------------------ Замена ссылок
 
+    /// <summary>
+    /// Заменить ссылки в <b>закрытом</b> документе: <c>ReplaceReferencedDocument</c> на каждую пару, все пары — за один вызов
+    /// (в одном сеансе SOLIDWORKS). Документ, открытый в SOLIDWORKS, не меняется — <see cref="CadException"/> с понятным текстом;
+    /// так же — если SOLIDWORKS не запущен. Пары «старый = новый» пропускаются. Если часть ссылок заменить не удалось,
+    /// остальные уже записаны в файл — это сказано в тексте ошибки.
+    /// </summary>
     public Task ReplaceReferencesAsync(string documentPath, IReadOnlyDictionary<string, string> oldToNew, CancellationToken ct = default)
     {
         if (oldToNew == null) throw new ArgumentNullException(nameof(oldToNew));
@@ -340,15 +346,20 @@ public sealed class SolidWorksAdapter : ICadAdapter, IDisposable
             if ((File.GetAttributes(full) & FileAttributes.ReadOnly) != 0)
                 throw new CadException($"Файл «{Path.GetFileName(full)}» только для чтения — ссылки в нём менять нельзя.");
 
+            var pairs = oldToNew.Where(p => !string.Equals(p.Key, p.Value, StringComparison.OrdinalIgnoreCase)).ToList();
             var failed = new List<string>();
-            foreach (var pair in oldToNew)
+            foreach (var pair in pairs)
             {
                 ct.ThrowIfCancellationRequested();
                 if (!s.App.CallBool("ReplaceReferencedDocument", full, pair.Key, pair.Value))
                     failed.Add($"«{pair.Key}» → «{pair.Value}»");
             }
             if (failed.Count > 0)
-                throw new CadException($"SOLIDWORKS не заменил ссылки в «{Path.GetFileName(full)}»: {string.Join("; ", failed)}.");
+            {
+                var done = pairs.Count - failed.Count;
+                throw new CadException($"SOLIDWORKS не заменил ссылки в «{Path.GetFileName(full)}»: {string.Join("; ", failed)}." +
+                                       (done > 0 ? $" Остальные ссылки ({done} из {pairs.Count}) заменены." : string.Empty));
+            }
             return true;
         }, ct);
     }

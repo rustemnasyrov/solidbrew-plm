@@ -40,7 +40,7 @@ public class ImportTests : IDisposable
         Assert.Equal(DocumentKind.Drawing, _env.Server.DocByPath("Чертежи/Корпус.tcdrw").Latest.Kind);
         var drw = _env.Server.DocByPath("Чертежи/Корпус.tcdrw").Latest;
         Assert.Equal(_env.DocId("Детали/Корпус.tcprt"), drw.Refs.Single().Child);
-        Assert.Equal(@"..\Детали\Корпус.tcprt", drw.Refs.Single().RefPath);
+        Assert.Equal(System.IO.Path.Combine(src, @"Детали\Корпус.tcprt"), drw.Refs.Single().RefPath);
         Assert.Equal("АБВ.000", _env.Server.Summary(_env.Server.Doc(result.HeadDocumentId)).Designation);
 
         // Исходники не изменены: хеши, атрибуты, время.

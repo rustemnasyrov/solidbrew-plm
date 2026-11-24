@@ -42,25 +42,45 @@ public class TestCadTests : IDisposable
     }
 
     [Fact]
-    public async Task ReplaceReferences_RelativeStaysRelative()
+    public async Task ReplaceReferences_WritesGivenFullPath_SeveralAtOnce_LikeSolidWorks()
     {
-        var path = TestCadWriter.Write(_env.Path("ws", "Сборки", "Узел.tcasm"), new TestCadDocument().Ref(@"..\Детали\Болт.tcprt"));
-        await new TestCadAdapter().ReplaceReferencesAsync(path, new Dictionary<string, string> { [@"..\Детали\Болт.tcprt"] = _env.Path("ws", "Детали", "Крепёж", "Болт.tcprt") });
+        var path = TestCadWriter.Write(_env.Path("ws", "Сборки", "Узел.tcasm"), new TestCadDocument().Ref(@"..\Детали\Болт.tcprt", @"Q:\Сеть\Детали\Вал.tcprt"));
+        var bolt = _env.Path("ws", "Детали", "Крепёж", "Болт.tcprt");
+        var shaft = _env.Path("ws", "Детали", "Вал.tcprt");
+        await new TestCadAdapter().ReplaceReferencesAsync(path, new Dictionary<string, string> { [@"..\Детали\Болт.tcprt"] = bolt, [@"q:\сеть\детали\вал.tcprt"] = shaft });
         var info = await new TestCadAdapter().ReadAsync(path);
-        Assert.Equal(@"..\Детали\Крепёж\Болт.tcprt", info.References.Single().SavedPath);
+        Assert.Equal(new[] { bolt, shaft }, info.References.Select(r => r.SavedPath));
     }
 
     [Fact]
-    public async Task OpenAndVerify_PrefersSameFolderThenRelativeThenAbsolute()
+    public async Task ReplaceReferences_DocumentOpenInCad_CadException_FileUnchanged()
+    {
+        var path = TestCadWriter.Write(_env.Path("ws", "Сборка.tcasm"), new TestCadDocument().Ref(@"Q:\Сеть\Вал.tcprt"));
+        var before = File.ReadAllBytes(path);
+        var cad = new TestCadAdapter();
+        cad.OpenDocuments.Add(path);
+        var ex = await Assert.ThrowsAsync<SolidBrew.Core.Cad.CadException>(() =>
+            cad.ReplaceReferencesAsync(path, new Dictionary<string, string> { [@"Q:\Сеть\Вал.tcprt"] = _env.Path("ws", "Вал.tcprt") }));
+        Assert.Contains("открыт", ex.Message);
+        Assert.Equal(before, File.ReadAllBytes(path));
+    }
+
+    [Fact]
+    public async Task OpenAndVerify_LikeSolidWorks_SameFolderByName_ThenAbsolutePath_RelativeIgnored()
     {
         var root = _env.Path("ws");
         var elsewhere = _env.Path("elsewhere");
         TestCadWriter.Create(System.IO.Path.Combine(elsewhere, "Деталь.tcprt"));
         TestCadWriter.Create(System.IO.Path.Combine(elsewhere, "Вал.tcprt"));
         TestCadWriter.Create(System.IO.Path.Combine(root, "Деталь.tcprt"));           // то же имя в папке сборки — побеждает
-        TestCadWriter.Create(System.IO.Path.Combine(root, "sub", "Ось.tcprt"));      // по относительному пути
+        TestCadWriter.Create(System.IO.Path.Combine(root, "sub", "Ось.tcprt"));      // относительный путь SOLIDWORKS не использует
+        TestCadWriter.Create(System.IO.Path.Combine(root, "sub", "Втулка.tcprt"));   // абсолютный путь внутри рабочей папки
         var head = TestCadWriter.Create(System.IO.Path.Combine(root, "Сборка.tcasm"),
-            new[] { System.IO.Path.Combine(elsewhere, "Деталь.tcprt"), @"sub\Ось.tcprt", System.IO.Path.Combine(elsewhere, "Вал.tcprt"), @"Q:\нет\Нет.tcprt" },
+            new[]
+            {
+                System.IO.Path.Combine(elsewhere, "Деталь.tcprt"), @"sub\Ось.tcprt", System.IO.Path.Combine(elsewhere, "Вал.tcprt"),
+                System.IO.Path.Combine(root, "sub", "Втулка.tcprt"), @"Q:\нет\Нет.tcprt",
+            },
             configurations: new[] { "A", "B" });
 
         var report = await new TestCadAdapter().OpenAndVerifyAsync(head, root);
@@ -69,11 +89,30 @@ public class TestCadTests : IDisposable
         var comps = report.Configurations[0].Components.ToDictionary(c => c.Name);
         Assert.Equal(System.IO.Path.Combine(root, "Деталь.tcprt"), comps["Деталь.tcprt"].LoadedPath);
         Assert.True(comps["Деталь.tcprt"].InsideWorkRoot);
-        Assert.Equal(System.IO.Path.Combine(root, "sub", "Ось.tcprt"), comps["Ось.tcprt"].LoadedPath);
-        Assert.False(comps["Вал.tcprt"].InsideWorkRoot);
+        Assert.Equal(System.IO.Path.Combine(root, "sub", "Втулка.tcprt"), comps["Втулка.tcprt"].LoadedPath);
+        Assert.False(comps.ContainsKey("Ось.tcprt"));
+        Assert.Contains(report.Problems, p => p.Contains("Ось.tcprt") && p.Contains("не найден"));
+        Assert.False(comps["Вал.tcprt"].InsideWorkRoot); // тихая подмена: загружен по старому абсолютному пути
         Assert.False(report.Ok);
         Assert.Contains(report.Problems, p => p.Contains("Нет.tcprt"));
         Assert.Contains(report.Problems, p => p.Contains("Вал.tcprt") && p.Contains("не из рабочей папки"));
+    }
+
+    [Fact]
+    public async Task OpenAndVerify_SameNameOpenInCad_TakenFromMemory()
+    {
+        var root = _env.Path("ws");
+        var other = TestCadWriter.Create(_env.Path("other", "Вал.tcprt"));
+        TestCadWriter.Create(System.IO.Path.Combine(root, "Вал.tcprt"));
+        var head = TestCadWriter.Create(System.IO.Path.Combine(root, "Сборка.tcasm"), new[] { System.IO.Path.Combine(root, "Вал.tcprt") });
+        var cad = new TestCadAdapter();
+        cad.OpenDocuments.Add(other);
+
+        var report = await cad.OpenAndVerifyAsync(head, root);
+
+        var comp = Assert.Single(report.Configurations[0].Components);
+        Assert.Equal(other, comp.LoadedPath);
+        Assert.False(report.Ok);
     }
 }
 

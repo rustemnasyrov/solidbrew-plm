@@ -154,7 +154,7 @@ public class CheckinTests : IDisposable
         var asm = plan.Items.Single(i => i.RelPath == "Изделие.tcasm");
         Assert.Equal(ReferenceResolution.Ambiguous, asm.References.Single(r => r.FileName == "Дубль.tcprt").Resolution);
         Assert.Equal(ReferenceResolution.Missing, asm.References.Single(r => r.FileName == "Нет.tcprt").Resolution);
-        Assert.Equal(ReferenceResolution.ByRelativePath, asm.References.Single(r => r.FileName == "Корпус.tcprt").Resolution);
+        Assert.Equal(ReferenceResolution.ByAbsolutePath, asm.References.Single(r => r.FileName == "Корпус.tcprt").Resolution); // переписана при открытии
         Assert.False(plan.CanExecute);
         Assert.Contains(plan.Problems, p => p.Code == LocalProblemCodes.AmbiguousReference && p.Message.Contains("A/Дубль.tcprt"));
         Assert.Contains(plan.Problems, p => p.Code == LocalProblemCodes.MissingReference && p.Message.Contains("Нет.tcprt"));
@@ -289,6 +289,12 @@ public class RenameAndMiscTests : IDisposable
         Assert.Contains("Крепёж", File.ReadAllText(iv.File("Изделие.tcasm")));
         var st = await iv.Service.GetStatusAsync(iv.WorkRoot);
         Assert.All(st.Files, f => Assert.Equal(LocalFileState.Unchanged, f.Local));
+        // Ссылающиеся документы положены из опубликованных байтов — остальные их ссылки снова переписаны на рабочую папку.
+        Assert.DoesNotContain(_env.Path("src"), File.ReadAllText(iv.File("Изделие.tcasm")), StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(_env.Path("src"), File.ReadAllText(iv.File("Сборки/Узел.tcasm")), StringComparison.OrdinalIgnoreCase);
+        var own = await iv.OpenAsync(head, verify: true);
+        Assert.Empty(own.Placed);
+        Assert.True(own.CadReport!.Ok, string.Join("; ", own.CadReport.Problems));
 
         // Новая версия открывается и проверяется в CAD на другом компьютере.
         Directory.Move(_env.Path("src"), _env.Path("src-gone"));

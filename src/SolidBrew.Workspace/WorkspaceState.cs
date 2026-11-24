@@ -72,19 +72,30 @@ public sealed class WorkspaceEntry
     public string RelPath { get; set; } = string.Empty;
     public Guid DocumentId { get; set; }
     public int Version { get; set; }
-    /// <summary>Хеш содержимого, как разложено (или сдано).</summary>
+    /// <summary>Хеш содержимого версии, как оно опубликовано (разложено из кэша или сдано).</summary>
     public string Sha256 { get; set; } = string.Empty;
+    /// <summary>
+    /// Хеш файла после переписывания ссылок на пути рабочей папки (раскладка); null — файл совпадает с <see cref="Sha256"/>.
+    /// Переписанные ссылки — не правка: локальная правка определяется сравнением с <c>PlacedSha256 ?? Sha256</c>.
+    /// </summary>
+    public string? PlacedSha256 { get; set; }
     public long Size { get; set; }
     public string Cad { get; set; } = string.Empty;
     public DocumentKind Kind { get; set; }
     public string? Designation { get; set; }
     public string? Name { get; set; }
-    /// <summary>Зависимости этой версии (как опубликованы).</summary>
+    /// <summary>
+    /// Зависимости этой версии. <see cref="WorkspaceDependency.RefPath"/> — путь ссылки, как он сейчас записан в файле
+    /// (после переписывания — полный путь в рабочей папке).
+    /// </summary>
     public List<WorkspaceDependency> Deps { get; set; } = new();
     /// <summary>Документ взят в работу мной (по последним сведениям).</summary>
     public bool LockedByMe { get; set; }
     /// <summary>Отметка файла после раскладки — чтобы не хешировать неизменённые файлы.</summary>
     public FileStamp? Stamp { get; set; }
+
+    /// <summary>Хеш файла в рабочей папке без локальных правок.</summary>
+    internal string LocalSha => PlacedSha256 ?? Sha256;
 }
 
 public sealed class WorkspaceDependency

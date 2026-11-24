@@ -20,6 +20,13 @@ public sealed class TestCadAdapter : ICadAdapter
 
     public IReadOnlyCollection<string> Extensions => Exts;
 
+    /// <summary>
+    /// Имитация документов, открытых в CAD (полные пути). Как в SOLIDWORKS: ссылки в открытом документе
+    /// <see cref="ReplaceReferencesAsync"/> не меняет (<see cref="CadException"/>), а при открытии сборки
+    /// одноимённый открытый документ берётся из памяти вместо файла, найденного по ссылке.
+    /// </summary>
+    public ISet<string> OpenDocuments { get; } = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
     public bool IsDocument(string path) => TestCadFormat.KindOf(path) != DocumentKind.Other;
 
     public DocumentKind KindOf(string path) => TestCadFormat.KindOf(path);
@@ -33,6 +40,8 @@ public sealed class TestCadAdapter : ICadAdapter
     public async Task ReplaceReferencesAsync(string documentPath, IReadOnlyDictionary<string, string> oldToNew, CancellationToken ct = default)
     {
         if (oldToNew == null) throw new ArgumentNullException(nameof(oldToNew));
+        if (OpenDocuments.Contains(Path.GetFullPath(documentPath)))
+            throw new CadException($"Документ «{Path.GetFileName(documentPath)}» открыт в TestCad. Ссылки меняются только в закрытом файле: закройте его и повторите.");
         byte[] bytes;
         try
         {
@@ -62,7 +71,6 @@ public sealed class TestCadAdapter : ICadAdapter
             var trimmed = line.Trim();
             if (TestCadFormat.TryValue(trimmed, TestCadFormat.RefPrefix, out var saved) && TryMap(oldToNew, saved, out var replacement))
             {
-                replacement = KeepStyle(documentPath, saved, replacement);
                 var indent = line.Substring(0, line.Length - line.TrimStart().Length);
                 sb.Append(indent).Append("ref: ").Append(replacement);
                 changed = true;
@@ -112,7 +120,10 @@ public sealed class TestCadAdapter : ICadAdapter
         var loadedByName = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         var visited = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { report.HeadPath };
         loadedByName[Path.GetFileName(report.HeadPath)] = report.HeadPath;
-        await LoadChildrenAsync(report.HeadPath, head, workRoot, components, loadedByName, visited, report.Problems, ct).ConfigureAwait(false);
+        var openInCad = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var open in OpenDocuments)
+            openInCad.TryAdd(Path.GetFileName(open), Path.GetFullPath(open));
+        await LoadChildrenAsync(report.HeadPath, head, workRoot, components, loadedByName, openInCad, visited, report.Problems, ct).ConfigureAwait(false);
 
         var configs = head.Configurations.Count > 0 ? head.Configurations : new List<string> { "По умолчанию" };
         foreach (var name in configs)
@@ -132,25 +143,35 @@ public sealed class TestCadAdapter : ICadAdapter
     }
 
     private async Task LoadChildrenAsync(string docPath, CadDocumentInfo info, string workRoot, List<LoadedComponent> components,
-        Dictionary<string, string> loadedByName, HashSet<string> visited, List<string> problems, CancellationToken ct)
+        Dictionary<string, string> loadedByName, Dictionary<string, string> openInCad, HashSet<string> visited, List<string> problems, CancellationToken ct)
     {
         var docDir = Path.GetDirectoryName(docPath)!;
         foreach (var reference in info.References)
         {
             ct.ThrowIfCancellationRequested();
-            var found = Locate(docDir, reference.SavedPath);
-            if (found == null)
+            // Как в SOLIDWORKS: сначала документ в памяти с тем же именем, затем поиск файла.
+            var located = Locate(docDir, reference.SavedPath);
+            var name = located != null ? Path.GetFileName(located) : reference.FileName;
+            if (loadedByName.TryGetValue(name, out var already))
+            {
+                if (located != null && !string.Equals(already, located, StringComparison.OrdinalIgnoreCase))
+                    problems.Add($"Одноимённые компоненты «{name}»: уже загружен {already}, ссылка из «{Path.GetFileName(docPath)}» нашла {located}. CAD использует первый — возможна подмена.");
+                continue;
+            }
+
+            string found;
+            if (openInCad.TryGetValue(name, out var inMemory))
+            {
+                found = inMemory; // уже открыт в CAD — берётся из памяти, файл по ссылке не читается
+            }
+            else if (located == null)
             {
                 problems.Add($"Компонент «{reference.FileName}» (ссылка из «{Path.GetFileName(docPath)}»: {reference.SavedPath}) не найден.");
                 continue;
             }
-
-            var name = Path.GetFileName(found);
-            if (loadedByName.TryGetValue(name, out var already))
+            else
             {
-                if (!string.Equals(already, found, StringComparison.OrdinalIgnoreCase))
-                    problems.Add($"Одноимённые компоненты «{name}»: уже загружен {already}, ссылка из «{Path.GetFileName(docPath)}» нашла {found}. CAD использует первый — возможна подмена.");
-                continue;
+                found = located;
             }
 
             loadedByName[name] = found;
@@ -168,12 +189,16 @@ public sealed class TestCadAdapter : ICadAdapter
                     problems.Add(ex.Message);
                     continue;
                 }
-                await LoadChildrenAsync(found, child, workRoot, components, loadedByName, visited, problems, ct).ConfigureAwait(false);
+                await LoadChildrenAsync(found, child, workRoot, components, loadedByName, openInCad, visited, problems, ct).ConfigureAwait(false);
             }
         }
     }
 
-    /// <summary>Поиск файла ссылки, как в SOLIDWORKS: имя в папке документа, относительный путь, сохранённый абсолютный путь.</summary>
+    /// <summary>
+    /// Поиск файла ссылки, как в SOLIDWORKS (проверено на 2018): (1) файл с тем же именем в папке ссылающегося документа;
+    /// (2) сохранённый путь, если он абсолютный и файл существует. Относительные пути («..\») SOLIDWORKS не использует —
+    /// они не разрешаются (кроме случая «то же имя в той же папке»). Поиск «в памяти по имени» — в <see cref="OpenAndVerifyAsync"/>.
+    /// </summary>
     public static string? Locate(string documentFolder, string savedPath)
     {
         var fileName = CadReference.FileNameOf(savedPath);
@@ -184,20 +209,12 @@ public sealed class TestCadAdapter : ICadAdapter
         }
 
         var normalized = savedPath.Replace('/', Path.DirectorySeparatorChar);
-        if (!Path.IsPathFullyQualified(normalized))
+        try
         {
-            try
-            {
-                var relative = Path.GetFullPath(Path.Combine(documentFolder, normalized));
-                if (File.Exists(relative)) return relative;
-            }
-            catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
-            {
-            }
+            if (Path.IsPathFullyQualified(normalized) && File.Exists(normalized)) return Path.GetFullPath(normalized);
         }
-        else if (File.Exists(normalized))
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
         {
-            return Path.GetFullPath(normalized);
         }
         return null;
     }
@@ -207,15 +224,6 @@ public sealed class TestCadAdapter : ICadAdapter
         if (string.IsNullOrWhiteSpace(root)) return false;
         var r = Path.GetFullPath(root).TrimEnd('\\', '/') + Path.DirectorySeparatorChar;
         return Path.GetFullPath(path).StartsWith(r, StringComparison.OrdinalIgnoreCase);
-    }
-
-    /// <summary>Относительная ссылка остаётся относительной (от папки документа), абсолютная — абсолютной.</summary>
-    private static string KeepStyle(string documentPath, string oldSaved, string newFullPath)
-    {
-        if (Path.IsPathFullyQualified(oldSaved.Replace('/', '\\')) ||!Path.IsPathFullyQualified(newFullPath)) return newFullPath;
-        var dir = Path.GetDirectoryName(Path.GetFullPath(documentPath))!;
-        var rel = Path.GetRelativePath(dir, newFullPath);
-        return Path.IsPathFullyQualified(rel) ? newFullPath : rel;
     }
 
     private static bool TryMap(IReadOnlyDictionary<string, string> map, string saved, out string replacement)

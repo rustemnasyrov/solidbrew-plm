@@ -178,6 +178,7 @@ public sealed partial class CliApp
             PrintPlan();
             Out.WriteLine(result.Message);
             if (result.Kept.Count > 0) Out.WriteLine("Оставлены как есть: " + string.Join(", ", result.Kept));
+            if (result.ReferencesRewritten.Count > 0) Out.WriteLine("Ссылки переписаны на рабочую папку: " + string.Join(", ", result.ReferencesRewritten));
             PrintProblems(result.Problems);
             if (result.CadReport is { } cad)
             {

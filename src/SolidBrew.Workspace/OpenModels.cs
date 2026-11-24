@@ -139,6 +139,11 @@ public sealed class OpenResult : OperationResult
 {
     public List<string> Placed { get; } = new();
     public List<string> Kept { get; } = new();
+    /// <summary>
+    /// Документы (относительные пути), в которых ссылки переписаны на пути рабочей папки: CAD (SOLIDWORKS) ищет компоненты
+    /// по сохранённым абсолютным путям, а не относительно документа. Не удалось переписать — предупреждение в <see cref="OperationResult.Problems"/>.
+    /// </summary>
+    public List<string> ReferencesRewritten { get; } = new();
     public int Downloaded { get; set; }
     public string HeadFullPath { get; set; } = string.Empty;
     /// <summary>Отчёт проверки в CAD (если запрошена).</summary>

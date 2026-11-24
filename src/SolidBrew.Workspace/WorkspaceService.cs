@@ -154,7 +154,7 @@ public sealed partial class WorkspaceService
         public long Size;
         public WorkspaceEntry? Entry;
         public ICadAdapter? Adapter;
-        public bool IsModified => Entry != null && Exists && Sha != null && !string.Equals(Sha, Entry.Sha256, StringComparison.Ordinal);
+        public bool IsModified => Entry != null && Exists && Sha != null && !string.Equals(Sha, Entry.LocalSha, StringComparison.Ordinal);
         public bool IsDraft => Entry == null && Adapter != null && Exists;
     }
 
@@ -232,7 +232,7 @@ public sealed partial class WorkspaceService
             f.Size = stamp?.Length ?? 0;
             if (f.Entry != null && f.Entry.Stamp != null && f.Entry.Stamp.SameAs(stamp))
             {
-                f.Sha = f.Entry.Sha256;
+                f.Sha = f.Entry.LocalSha;
                 continue;
             }
             progress?.Report(new WorkProgress(WorkStage.Hashing, i, toHash.Count, $"Проверка «{Texts.FileNameOf(f.RelPath)}»"));
@@ -244,7 +244,7 @@ public sealed partial class WorkspaceService
             {
                 throw new WorkspaceException($"Не удалось прочитать «{f.RelPath}»: {ex.Message}", ex);
             }
-            if (f.Entry != null && f.Sha == f.Entry.Sha256 && stamp != null)
+            if (f.Entry != null && f.Sha == f.Entry.LocalSha && stamp != null)
             {
                 f.Entry.Stamp = stamp;
                 scan.StateDirty = true;

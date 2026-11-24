@@ -68,6 +68,8 @@ public static class LocalProblemCodes
     public const string LockedByOther = "local.lockedByOther";
     public const string LocalChanges = "local.localChanges";
     public const string PathTaken = "local.pathTaken";
+    /// <summary>Ссылки в разложенном документе не переписаны на пути рабочей папки (CAD не запущен, документ открыт в CAD…).</summary>
+    public const string ReferencesNotRewritten = "local.referencesNotRewritten";
     public const string Server = "server";
 }
 

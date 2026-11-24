@@ -105,7 +105,7 @@ public sealed partial class WorkspaceService
             plan.Problems.Add(new PlanProblem(ProblemSeverity.Error, LocalProblemCodes.NotLatest,
                 $"В рабочей папке {label} v{entry.Version}, последняя — v{detail.Document.LatestVersion}. Сначала обновите документ.", entry.RelPath, entry.DocumentId));
         var full = RelPath.Combine(root, entry.RelPath);
-        if (File.Exists(full) && await FileOps.HashAsync(full, ct).ConfigureAwait(false) != entry.Sha256)
+        if (File.Exists(full) && await FileOps.HashAsync(full, ct).ConfigureAwait(false) != entry.LocalSha)
             plan.Problems.Add(new PlanProblem(ProblemSeverity.Error, LocalProblemCodes.LocalChanges,
                 $"В {label} есть несданные правки. Сначала сдайте их или отмените, затем переименуйте.", entry.RelPath, entry.DocumentId));
 
@@ -137,7 +137,7 @@ public sealed partial class WorkspaceService
             if (pEntry != null)
             {
                 var pFull = RelPath.Combine(root, pEntry.RelPath);
-                if (File.Exists(pFull) && await FileOps.HashAsync(pFull, ct).ConfigureAwait(false) != pEntry.Sha256)
+                if (File.Exists(pFull) && await FileOps.HashAsync(pFull, ct).ConfigureAwait(false) != pEntry.LocalSha)
                     plan.Problems.Add(new PlanProblem(ProblemSeverity.Error, LocalProblemCodes.LocalChanges,
                         $"В {pLabel} есть несданные правки. Сначала сдайте или отмените их — переименование сдаёт этот документ.", pEntry.RelPath, parentId));
                 if (RelPath.Key(pEntry.RelPath) != RelPath.Key(parent.RelPath))
@@ -327,7 +327,14 @@ public sealed partial class WorkspaceService
             var renamedEntry = state.FindByDocument(plan.DocumentId)!;
             renamedEntry.RelPath = plan.NewRelPath;
             renamedEntry.Version = VersionOf(plan.DocumentId);
+            // Байты переименованного не менялись: пути ссылок — как сейчас в файле (возможно, уже переписаны на рабочую папку).
+            var oldDeps = renamedEntry.Deps;
             renamedEntry.Deps = DepsOf(renamedItem);
+            foreach (var d in renamedEntry.Deps)
+            {
+                var local = oldDeps.FirstOrDefault(o => o.DocumentId == d.DocumentId);
+                if (local != null) d.RefPath = local.RefPath;
+            }
             renamedEntry.LockedByMe = renamedLocked;
             renamedEntry.Stamp = FileOps.StampOf(newFull);
 
@@ -358,6 +365,11 @@ public sealed partial class WorkspaceService
                 });
             }
             state.Save(root);
+
+            // Ссылающиеся документы положены из опубликованных байтов: остальные их ссылки — на пути рабочей папки.
+            var relinkIds = new HashSet<Guid>(plan.Parents.Select(p => p.DocumentId)) { plan.DocumentId };
+            var rewritten = await RewriteReferencesAsync(root, state, state.Entries.Where(e => relinkIds.Contains(e.DocumentId)).ToList(), null, result.Problems, progress, ct).ConfigureAwait(false);
+            if (rewritten.Count > 0 || result.Problems.Count > 0) state.Save(root);
 
             // Блокировки, взятые только ради переименования, снимаются (при KeepLocks сервер их оставил).
             if (keep)
