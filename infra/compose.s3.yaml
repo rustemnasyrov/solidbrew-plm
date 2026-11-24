@@ -1,0 +1,14 @@
+# Дополнение к compose.yaml: архив в S3-совместимом хранилище (например, MinIO на хосте, слушающий 127.0.0.1:9000;
+# Docker Desktop пересылает обращения к host.docker.internal на loopback хоста). Не используется по умолчанию:
+# community-сборки MinIO для Windows больше не публикуются (dl.min.io отвечает 410 Gone с 2025 года).
+# docker compose -f compose.yaml -f infra/compose.s3.yaml up -d --build
+services:
+  api:
+    environment:
+      PDM_STORAGE: s3
+      PDM_S3_ENDPOINT: ${PDM_S3_ENDPOINT:-http://host.docker.internal:9000}
+      PDM_S3_ACCESS_KEY: pdm-api
+      PDM_S3_SECRET_KEY: ${PDM_S3_SECRET_KEY:?set PDM_S3_SECRET_KEY in .env}
+      PDM_S3_BUCKET: pdm-objects
+    extra_hosts:
+      - 'host.docker.internal:host-gateway'

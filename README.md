@@ -9,8 +9,8 @@
 - `src/SolidBrew.Api/` — сервер (ASP.NET Core в Docker): документы, версии, блокировки, вход по учётным записям, HTTPS.
 - `src/SolidBrew.Client/` — клиент для Windows (`SolidBrew.exe`); `src/SolidBrew.Cli/` — командная строка `sbpdm.exe`.
 - `src/SolidBrew.Workspace/`, `src/SolidBrew.Adapters.*` — рабочие папки, кэш, адаптеры SOLIDWORKS и тестового CAD.
-- `compose.yaml` — PostgreSQL и API. Архив содержимого — MinIO на том же сервере вне Docker (`infra/minio/`).
-- `tools/` — подготовка сервера (`New-LocalEnv.ps1`, `New-ServerCert.ps1`, `Install-Server.ps1`, `Initialize-MinIO.ps1`) и публикация клиента (`Publish-Client.ps1`).
+- `compose.yaml` — PostgreSQL и API. Архив содержимого — папка на диске сервера вне Docker-томов (`PDM_ARCHIVE_DIR`). S3-вариант — `infra/compose.s3.yaml`, по умолчанию не используется.
+- `tools/` — подготовка сервера (`New-LocalEnv.ps1`, `New-ServerCert.ps1`; для S3-варианта — `Install-MinIO.ps1`, `Initialize-MinIO.ps1`), публикация клиента (`Publish-Client.ps1`), запуск заданий на машине с SOLIDWORKS (`Start-SwProbe.ps1`, `Invoke-SwJob.ps1`, `Invoke-InUserSession.ps1`).
 
 ## Устройство сервера
 
@@ -18,15 +18,15 @@
 |---|---|---|
 | API | Docker Compose, контейнер `api` | `https://10.0.1.9:8443/` — для рабочих мест (самоподписанный сертификат); `http://127.0.0.1:8088/` — только диагностика с самого сервера |
 | PostgreSQL | Docker Compose, том `postgres-data` | только внутренняя сеть Compose, портов наружу нет |
-| MinIO (архив) | Windows, задача планировщика `SolidBrewMinIO` от SYSTEM | `127.0.0.1:9000`, данные — папка `PDM_ARCHIVE_DIR` |
+| Архив файлов | Папка на диске сервера `PDM_ARCHIVE_DIR`, подключена в контейнер API как `/archive` | наружу не публикуется; раскладка `objects/<2 символа>/<sha256>`, файлы только дописываются |
 
-MinIO слушает только loopback: из ЛВС он недоступен, а контейнер API обращается к нему по `http://host.docker.internal:9000` — Docker Desktop пересылает такие соединения на `127.0.0.1` хоста (проверено). API ходит в MinIO под учётной записью `pdm-api` с правом только читать и записывать объекты, без удаления.
+MinIO не используется: с 2025 года community-сборки MinIO для Windows не публикуются, `dl.min.io` отвечает 410. Код S3-хранилища оставлен опцией (`infra/compose.s3.yaml`, `tools/Install-MinIO.ps1`).
 
-Все секреты — в файле `.env` в папке репозитория (в git не попадает) и в папках вне репозитория: `C:\SolidBrew\certs\` (сертификат), `C:\SolidBrew\minio\config.env` (доступ только SYSTEM и администраторам).
+Все секреты — в файле `.env` в папке репозитория (в git не попадает) и в `C:\SolidBrew\certs\` (сертификат).
 
 ## Установка сервера (Windows, Docker Desktop)
 
-Нужны Docker Desktop с Linux-контейнерами и `minio.exe`, `mc.exe` в `C:\SolidBrew\minio\` с хешами из `infra/minio/versions.json`. Все команды — PowerShell из папки репозитория.
+Нужен Docker Desktop с Linux-контейнерами; права администратора не нужны. Все команды — PowerShell из папки репозитория.
 
 1. **Файл `.env`** (один раз; существующие значения не перезаписываются, недостающие ключи дописываются):
 
@@ -34,7 +34,7 @@ MinIO слушает только loopback: из ЛВС он недоступе�
    .\tools\New-LocalEnv.ps1 -BindAddress 10.0.1.9
    ```
 
-   `PDM_BIND_ADDRESS` — адрес сервера в ЛВС, на котором API принимает HTTPS; `PDM_ARCHIVE_DIR` — папка архива MinIO; `PDM_BOOTSTRAP_ADMIN_PASSWORD` — пароль первого администратора.
+   `PDM_BIND_ADDRESS` — адрес сервера в ЛВС, на котором API принимает HTTPS; `PDM_ARCHIVE_DIR` — папка архива файлов (вне репозитория, на диске с запасом места); `PDM_BOOTSTRAP_ADMIN_PASSWORD` — пароль первого администратора.
 
 2. **Сертификат HTTPS** (без прав администратора):
 
@@ -44,13 +44,7 @@ MinIO слушает только loopback: из ЛВС он недоступе�
 
    Создаёт самоподписанный сертификат (RSA 3072, 5 лет, имена `D-VPAVLOV`, `localhost`, `10.0.1.9`, `127.0.0.1`) в `C:\SolidBrew\certs\pdm-api.pfx`, дописывает в `.env` `PDM_TLS_PFX_PATH` и `PDM_TLS_PFX_PASSWORD` и печатает **отпечаток SHA-256**. Запишите его: конструкторы сверяют с ним отпечаток при первом подключении. Повторный запуск только печатает отпечаток; `-Force` выпускает новый сертификат (клиенты спросят о доверии заново).
 
-3. **MinIO и брандмауэр** — от администратора (PowerShell → «Запуск от имени администратора»):
-
-   ```powershell
-   powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\Install-Server.ps1
-   ```
-
-   Скрипт проверяет SHA-256 `minio.exe` и `mc.exe`, закрывает папки бинарников и архива от изменения, пишет `C:\SolidBrew\minio\config.env`, регистрирует и запускает задачу `SolidBrewMinIO` (при запуске системы, от SYSTEM, перезапуск при сбое), создаёт бакет `pdm-objects`, политику и пользователя `pdm-api` и добавляет правило брандмауэра «SolidBrew PDM API» (входящий TCP 8443 только из `10.0.0.0/16`, профили «Домен» и «Частная»). Повторный запуск безопасен; `-Uninstall` убирает задачу, правило и `config.env`, не трогая данные. Журнал MinIO — `C:\SolidBrew\minio\logs\`.
+3. **Брандмауэр.** На D-VPAVLOV порт HTTPS API (8443) уже доступен из ЛВС — его открывает правило Docker Desktop, отдельное правило не нужно. Ограничить доступ подсетью можно только вместе с правилами Docker Desktop; это решение администратора.
 
 4. **PostgreSQL и API**:
 
@@ -69,7 +63,6 @@ MinIO слушает только loopback: из ЛВС он недоступе�
    .\publish\client\sbpdm.exe admin user-add ivanov "Иванов И. И." --role designer
    ```
 
-Без MinIO (лаборатория, тесты) архив можно держать в обычной папке: `docker compose -f compose.yaml -f infra/compose.fs.yaml up -d --build` с `PDM_FS_ARCHIVE_DIR` в `.env`.
 
 ## Рабочее место конструктора
 
@@ -105,12 +98,12 @@ New-Item -ItemType Directory -Force $dest | Out-Null
 docker compose exec -T postgres pg_dump -U pdm -d pdm -Fc -f /tmp/pdm.dump
 docker compose cp postgres:/tmp/pdm.dump "$dest\pdm.dump"
 docker compose exec -T postgres rm /tmp/pdm.dump
-# 2. Архив MinIO (от администратора: папка закрыта для обычных пользователей).
+# 2. Папка архива.
 robocopy "<PDM_ARCHIVE_DIR>" "$dest\archive" /E /COPY:DAT /R:1 /W:1
 # 3. Секреты и сертификат — отдельно, в защищённое место: .env, C:\SolidBrew\certs\pdm-api.pfx.
 ```
 
-Папка архива — данные MinIO в его собственном формате: восстанавливается тем же `minio.exe` (тот же релиз из `infra/minio/versions.json`) на скопированной папке. Восстановление базы на новом сервере: `docker compose up -d` (API создаст схему и роли), `docker compose stop api`, `docker compose cp pdm.dump postgres:/tmp/pdm.dump`, `docker compose exec -T postgres pg_restore -U pdm -d pdm --clean --if-exists /tmp/pdm.dump`, `docker compose start api`. Процедуру восстановления проверьте на отдельной машине до того, как она понадобится.
+Папка архива — обычные файлы; восстанавливается копированием в `PDM_ARCHIVE_DIR`. Восстановление базы на новом сервере: `docker compose up -d` (API создаст схему и роли), `docker compose stop api`, `docker compose cp pdm.dump postgres:/tmp/pdm.dump`, `docker compose exec -T postgres pg_restore -U pdm -d pdm --clean --if-exists /tmp/pdm.dump`, `docker compose start api`. Процедуру восстановления проверьте на отдельной машине до того, как она понадобится.
 
 ## Разработка
 
