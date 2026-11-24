@@ -1,5 +1,7 @@
 using System.Text;
+using System.Text.Json;
 using SolidBrew.Core.Contracts;
+using SolidBrew.Workspace;
 
 namespace SolidBrew.Cli;
 
@@ -7,22 +9,37 @@ public sealed partial class CliApp
 {
     // ------------------------------------------------------------------ server, login, logout, whoami
 
-    private Task<int> ServerAsync()
+    private async Task<int> ServerAsync()
     {
         var p = Profile;
         var changed = false;
+        var probe = false;
+        string? trust = null;
+        if (_args.Value("trust") is { } trustText)
+        {
+            try
+            {
+                trust = ServerCertificateValidator.NormalizeThumbprint(trustText);
+            }
+            catch (WorkspaceException ex)
+            {
+                throw new CliException(ex.Message);
+            }
+            probe = true;
+        }
         if (_args.At(0) is { } url)
         {
             var text = url.Trim();
             if (!Uri.TryCreate(text.EndsWith('/') ? text : text + "/", UriKind.Absolute, out var uri)
                 || (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps))
-                throw new CliException($"Неверный адрес сервера PDM «{url}». Пример: http://10.0.1.9:8088/");
+                throw new CliException($"Неверный адрес сервера PDM «{url}». Пример: https://10.0.1.9:8443/");
             var normalized = uri.ToString();
             if (!string.Equals(normalized, p.ServerUrl, StringComparison.OrdinalIgnoreCase))
             {
                 p.ServerUrl = normalized;
                 p.Token = null;
                 p.TokenExpiresAt = null;
+                probe = true;
             }
             changed = true;
         }
@@ -43,14 +60,56 @@ public sealed partial class CliApp
         }
         if (changed) SaveProfile();
 
-        Emit(new { serverUrl = p.ServerUrl, login = p.Login, loggedIn = p.HasValidToken, cacheRoot = p.CacheRoot, enableTestCad = p.EnableTestCad }, () =>
+        // Проверка подключения и сертификата: отпечаток из --trust сохраняется, только если сервер предъявил именно его.
+        string? warning = null;
+        if (probe)
+        {
+            var thumbprint = trust ?? p.TrustedCertificateThumbprint;
+            try
+            {
+                await _env.ApiFactory(p.ServerUrl, null, thumbprint).GetMeAsync(_ct).ConfigureAwait(false);
+            }
+            catch (Core.Api.PdmApiException ex) when (ex.StatusCode is 401 or 403)
+            {
+                // Сервер ответил — соединение и сертификат в порядке.
+            }
+            catch (Core.Api.PdmApiException ex) when (UntrustedServerCertificateException.Find(ex) is { } untrusted)
+            {
+                if (trust == null) throw;
+                Err.WriteLine("Отпечаток из --trust не совпадает с сертификатом сервера и не сохранён.");
+                Err.WriteLine($"  указан:           {ServerCertificateValidator.FormatThumbprint(trust)}");
+                Err.WriteLine($"  предъявил сервер: {untrusted.DisplayThumbprint}");
+                Err.WriteLine("Сверьте отпечаток с администратором PDM.");
+                if (Json)
+                    Out.WriteLine(JsonSerializer.Serialize(new { error = untrusted.Message, exitCode = NeedsAnswer, server = p.ServerUrl, thumbprint = untrusted.Thumbprint }, JsonOut));
+                return NeedsAnswer;
+            }
+            catch (Core.Api.PdmApiException ex)
+            {
+                warning = "Сервер не проверен: " + ex.Message;
+            }
+            if (warning == null && trust != null && !string.Equals(trust, p.TrustedCertificateThumbprint, StringComparison.Ordinal))
+            {
+                p.TrustedCertificateThumbprint = trust;
+                SaveProfile();
+            }
+            if (warning != null) Err.WriteLine(warning);
+        }
+
+        Emit(new
+        {
+            serverUrl = p.ServerUrl, login = p.Login, loggedIn = p.HasValidToken, cacheRoot = p.CacheRoot, enableTestCad = p.EnableTestCad,
+            trustedCertificateThumbprint = p.TrustedCertificateThumbprint, warning,
+        }, () =>
         {
             Out.WriteLine($"Сервер PDM: {p.ServerUrl}");
+            if (p.TrustedCertificateThumbprint != null)
+                Out.WriteLine($"Доверенный сертификат: SHA-256 {ServerCertificateValidator.FormatThumbprint(p.TrustedCertificateThumbprint)}");
             Out.WriteLine(p.HasValidToken ? $"Вход: {p.Login}" : "Вход не выполнен (sbpdm login).");
             Out.WriteLine($"Кэш: {p.CacheRoot ?? Workspace.LocalCache.DefaultRoot}");
             if (p.EnableTestCad) Out.WriteLine("Тестовый CAD: включён.");
         });
-        return Task.FromResult(Ok);
+        return Ok;
     }
 
     private async Task<int> LoginAsync()
@@ -65,7 +124,7 @@ public sealed partial class CliApp
         }
         var password = ReadPassword("Пароль: ");
 
-        var api = _env.ApiFactory(p.ServerUrl, null);
+        var api = _env.ApiFactory(p.ServerUrl, null, p.TrustedCertificateThumbprint);
         var response = await api.LoginAsync(login.Trim(), password, _ct).ConfigureAwait(false);
         p.Login = response.User.Login;
         p.Token = response.Token;
@@ -121,7 +180,7 @@ public sealed partial class CliApp
         {
             try
             {
-                await _env.ApiFactory(p.ServerUrl, p.Token).LogoutAsync(_ct).ConfigureAwait(false);
+                await _env.ApiFactory(p.ServerUrl, p.Token, p.TrustedCertificateThumbprint).LogoutAsync(_ct).ConfigureAwait(false);
             }
             catch (Core.Api.PdmApiException)
             {

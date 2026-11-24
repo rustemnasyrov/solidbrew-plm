@@ -37,12 +37,25 @@ public sealed class PdmOptions
     /// <summary>Каталог временных файлов при загрузке объектов.</summary>
     public string TempDir { get; init; } = Path.GetTempPath();
 
+    /// <summary>Сертификат HTTPS (PFX). null — сервер слушает только HTTP (тесты, лаборатория).</summary>
+    public string? TlsPfxPath { get; init; }
+    public string? TlsPfxPassword { get; init; }
+    /// <summary>Порт HTTPS внутри контейнера.</summary>
+    public int HttpsPort { get; init; } = 8443;
+    /// <summary>Порт HTTP внутри контейнера при включённом HTTPS (локальная диагностика); null — без HTTP.</summary>
+    public int? HttpPort { get; init; } = 8080;
+
     public static PdmOptions FromConfiguration(IConfiguration config)
     {
         string Required(string key) => config[key] is { Length: > 0 } value
             ? value
             : throw new InvalidOperationException($"Не задан параметр {key} (переменная окружения или .env).");
         string? Optional(string key) => config[key] is { Length: > 0 } value ? value : null;
+        int? Port(string key) => Optional(key) is not { } text
+            ? null
+            : int.TryParse(text, NumberStyles.None, CultureInfo.InvariantCulture, out var port) && port is > 0 and < 65536
+                ? port
+                : throw new InvalidOperationException($"{key}: ожидается номер порта 1–65535, задано «{text}».");
 
         var storage = (Optional("PDM_STORAGE") ?? "s3").Trim().ToLowerInvariant();
         if (storage is not ("s3" or "fs"))
@@ -65,6 +78,10 @@ public sealed class PdmOptions
             S3Bucket = Optional("PDM_S3_BUCKET") ?? "pdm-objects",
             MaxObjectBytes = Optional("PDM_MAX_OBJECT_BYTES") is { } max ? long.Parse(max, CultureInfo.InvariantCulture) : DefaultMaxObjectBytes,
             TempDir = Optional("PDM_TEMP_DIR") ?? Path.GetTempPath(),
+            TlsPfxPath = Optional("PDM_TLS_PFX_PATH"),
+            TlsPfxPassword = Optional("PDM_TLS_PFX_PASSWORD"),
+            HttpsPort = Port("PDM_HTTPS_LISTEN_PORT") ?? 8443,
+            HttpPort = Optional("PDM_HTTP_LISTEN_PORT") is "off" or "0" ? null : Port("PDM_HTTP_LISTEN_PORT") ?? 8080,
         };
 
         if (options.DbAppPassword.Length < 16)

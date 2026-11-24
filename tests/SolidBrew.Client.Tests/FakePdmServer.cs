@@ -384,6 +384,7 @@ public sealed class FakePdmApi : IPdmApi
     private Task<T> Run<T>(Func<T> f)
     {
         if (Offline) return Task.FromException<T>(new PdmApiException(0, PdmApiException.DefaultMessage(0)));
+        if (ConnectFailure != null) return Task.FromException<T>(ConnectFailure);
         try
         {
             return Task.FromResult(_s.Locked(f));
@@ -397,6 +398,9 @@ public sealed class FakePdmApi : IPdmApi
     private Task Run(Action a) => Run(() => { a(); return 0; });
 
     private FakeDoc Doc(Guid id) => _s.Docs.TryGetValue(id, out var d) ? d : throw FakePdmServer.Error(404, "Документ не найден.");
+
+    /// <summary>Отказ любого обращения на уровне соединения (например, недоверенный сертификат).</summary>
+    public PdmApiException? ConnectFailure { get; set; }
 
     /// <summary>Отказ входа (неверный пароль и т. п.).</summary>
     public PdmApiException? LoginFailure { get; set; }

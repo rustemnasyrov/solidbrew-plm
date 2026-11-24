@@ -5,9 +5,11 @@ public sealed partial class CliApp
     private IEnumerable<CommandSpec> BuildCommands()
     {
         string[] none = Array.Empty<string>();
-        yield return new("server", "server [<адрес>] [--cache <папка>] [--test-cad on|off]",
-            "Показать или задать адрес сервера PDM (например http://10.0.1.9:8088/), папку кэша и тестовый CAD.",
-            none, new[] { "cache", "test-cad" }, ServerAsync);
+        yield return new("server", "server [<адрес>] [--trust <отпечаток>] [--cache <папка>] [--test-cad on|off]",
+            "Показать или задать адрес сервера PDM (например https://10.0.1.9:8443/), папку кэша и тестовый CAD. " +
+            "При смене адреса проверяет подключение; неизвестный сертификат сервера — печатает его отпечаток SHA-256 (код 2). " +
+            "--trust — доверять сертификату с этим отпечатком (сверьте с администратором).",
+            none, new[] { "trust", "cache", "test-cad" }, ServerAsync);
         yield return new("login", "login [--user <имя>] [--password-stdin]",
             "Войти в PDM. Пароль вводится скрыто с консоли или читается строкой из stdin (--password-stdin).",
             new[] { "password-stdin" }, new[] { "user" }, LoginAsync);

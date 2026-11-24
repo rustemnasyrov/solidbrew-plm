@@ -43,8 +43,8 @@ public sealed class CliEnvironment
     /// <summary>Файл профиля; null — <see cref="ClientProfileStore.DefaultPath"/> (переменная SOLIDBREW_PROFILE или %APPDATA%).</summary>
     public string? ProfilePath { get; init; }
 
-    /// <summary>Клиент API по адресу сервера и токену.</summary>
-    public Func<string, string?, IPdmApi> ApiFactory { get; init; } = (url, token) => PdmClientFactory.Create(url, token);
+    /// <summary>Клиент API по адресу сервера, токену и доверенному SHA-256-отпечатку сертификата сервера.</summary>
+    public Func<string, string?, string?, IPdmApi> ApiFactory { get; init; } = (url, token, thumbprint) => PdmClientFactory.Create(url, token, thumbprint);
 
     /// <summary>Скрытый ввод секрета (пароля) с подсказкой; null — с консоли без эха.</summary>
     public Func<string, string?>? ReadSecret { get; init; }

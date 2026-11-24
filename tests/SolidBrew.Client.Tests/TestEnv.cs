@@ -127,10 +127,23 @@ public sealed class FakeClientFactory : IClientFactory
     /// <summary>Настройка созданного API (например, отказ входа).</summary>
     public Action<FakePdmApi>? Configure { get; set; }
 
-    public IPdmApi CreateApi(string serverUrl, string? token)
+    /// <summary>Сертификат, который «предъявляет» сервер; null — сертификат подтверждён Windows (или HTTP).</summary>
+    public ServerCertificateInfo? ServerCertificate { get; set; }
+
+    /// <summary>Отпечатки, с которыми создавались клиенты API.</summary>
+    public List<string?> Thumbprints { get; } = new();
+
+    public IPdmApi CreateApi(string serverUrl, string? token, string? trustedThumbprint)
     {
+        Thumbprints.Add(trustedThumbprint);
         var api = _env.Server.Connect(NextLogin);
         api.Token = token;
+        if (ServerCertificate != null && !string.Equals(ServerCertificate.Thumbprint, trustedThumbprint, StringComparison.OrdinalIgnoreCase))
+        {
+            // Как настоящий PdmApiClient: исключение о сертификате вложено в PdmApiException(0, …).
+            var untrusted = new UntrustedServerCertificateException(ServerCertificate, new Uri(serverUrl));
+            api.ConnectFailure = new PdmApiException(0, "Нет связи с сервером PDM: " + untrusted.Message, null, untrusted);
+        }
         Configure?.Invoke(api);
         LastApi = api;
         return api;

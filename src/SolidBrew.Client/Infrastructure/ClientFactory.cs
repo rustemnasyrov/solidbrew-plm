@@ -14,7 +14,8 @@ public sealed class ClientFactory : IClientFactory, IDisposable
 {
     private SolidWorksAdapter? _solidWorks;
 
-    public IPdmApi CreateApi(string serverUrl, string? token) => PdmClientFactory.Create(serverUrl, token);
+    public IPdmApi CreateApi(string serverUrl, string? token, string? trustedThumbprint) =>
+        PdmClientFactory.Create(serverUrl, token, trustedThumbprint);
 
     public WorkspaceService CreateWorkspace(IPdmApi api, ClientProfile profile)
     {

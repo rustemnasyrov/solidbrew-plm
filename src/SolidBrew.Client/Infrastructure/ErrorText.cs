@@ -9,6 +9,9 @@ public sealed record ErrorInfo(string Message, IReadOnlyList<string> Details)
 {
     public ErrorInfo(string message) : this(message, Array.Empty<string>()) { }
 
+    /// <summary>Сервер предъявил неизвестный сертификат: отпечаток для диалога доверия.</summary>
+    public UntrustedServerCertificateException? UntrustedCertificate { get; init; }
+
     public override string ToString() => Details.Count == 0 ? Message : Message + Environment.NewLine + string.Join(Environment.NewLine, Details);
 }
 
@@ -18,6 +21,8 @@ public static class ErrorText
     public static ErrorInfo Describe(Exception ex)
     {
         while (ex is AggregateException { InnerExceptions.Count: 1 } agg) ex = agg.InnerExceptions[0];
+        if (UntrustedServerCertificateException.Find(ex) is { } untrusted)
+            return new ErrorInfo(untrusted.Message) { UntrustedCertificate = untrusted };
         switch (ex)
         {
             case OperationCanceledException:

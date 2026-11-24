@@ -64,13 +64,13 @@ public sealed partial class LoginViewModel : DialogViewModel
         var url = ServerUrl.Trim();
         var login = Login.Trim();
         var password = Password;
-        var outcome = await Busy.RunAsync("Вход", (_, ct) => WithTimeoutAsync(LoginTimeout, ct, async t =>
+        var outcome = await RunTrustingAsync("Вход", async (thumbprint, t) =>
         {
-            var api = _services.Factory.CreateApi(url, null);
+            var api = _services.Factory.CreateApi(url, null, thumbprint);
             var response = await api.LoginAsync(login, password, t);
             var notes = await LoadNotificationsAsync(api, t);
             return (api, response, notes);
-        }), reportErrors: false);
+        });
         if (!outcome.Ok)
         {
             ErrorMessage = outcome.Canceled ? null : LoginError(outcome.Error!);
@@ -99,16 +99,21 @@ public sealed partial class LoginViewModel : DialogViewModel
         if (!_profile.HasValidToken) return false;
         var url = _profile.ServerUrl;
         var token = _profile.Token;
-        var outcome = await Busy.RunAsync("Восстановление сеанса", (_, ct) => WithTimeoutAsync(LoginTimeout, ct, async t =>
+        var outcome = await RunTrustingAsync("Восстановление сеанса", async (thumbprint, t) =>
         {
-            var api = _services.Factory.CreateApi(url, token);
+            var api = _services.Factory.CreateApi(url, token, thumbprint);
             var me = await api.GetMeAsync(t);
             var notes = await LoadNotificationsAsync(api, t);
             return (api, me, notes);
-        }), reportErrors: false);
+        });
         if (!outcome.Ok)
         {
-            if (outcome.Error != null && !outcome.Canceled)
+            if (outcome.Error?.UntrustedCertificate != null)
+            {
+                // Сеанс не трогаем: дело в сертификате, а не во входе.
+                ErrorMessage = outcome.Error!.Message;
+            }
+            else if (outcome.Error != null && !outcome.Canceled)
             {
                 ErrorMessage = "Сохранённый сеанс недействителен. Войдите заново.";
                 _profile.Token = null;
@@ -119,6 +124,30 @@ public sealed partial class LoginViewModel : DialogViewModel
         }
         Complete(outcome.Value.api, outcome.Value.me, outcome.Value.notes);
         return true;
+    }
+
+    /// <summary>
+    /// Выполнить обращение к серверу с доверием при первом подключении: если сервер предъявил неизвестный
+    /// сертификат, спросить пользователя (отпечаток), сохранить отпечаток в профиль и повторить.
+    /// </summary>
+    private async Task<Outcome<T>> RunTrustingAsync<T>(string title, Func<string?, CancellationToken, Task<T>> work)
+    {
+        var thumbprint = _profile.TrustedCertificateThumbprint;
+        while (true)
+        {
+            var current = thumbprint;
+            var outcome = await Busy.RunAsync(title, (_, ct) => WithTimeoutAsync(LoginTimeout, ct, t => work(current, t)), reportErrors: false);
+            if (outcome.Ok || outcome.Error?.UntrustedCertificate is not { } untrusted) return outcome;
+            if (string.Equals(untrusted.Thumbprint, current, StringComparison.OrdinalIgnoreCase)) return outcome;
+            if (!CertificateTrust.Ask(Dialogs, untrusted))
+            {
+                var declined = "Подключение отменено: сертификат сервера не подтверждён. Отпечаток SHA-256: " + untrusted.DisplayThumbprint + ".";
+                return new Outcome<T>(false, default, new ErrorInfo(declined) { UntrustedCertificate = untrusted }, false);
+            }
+            _profile.TrustedCertificateThumbprint = untrusted.Thumbprint;
+            TrySaveProfile();
+            thumbprint = untrusted.Thumbprint;
+        }
     }
 
     /// <summary>Сколько ждать ответа сервера при входе.</summary>

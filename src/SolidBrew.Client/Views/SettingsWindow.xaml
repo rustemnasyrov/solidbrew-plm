@@ -6,7 +6,23 @@
     <StackPanel Margin="16">
         <TextBlock Text="Адрес сервера PDM" Style="{StaticResource SubHeader}" Margin="0,0,0,4" />
         <TextBox Text="{Binding ServerUrl, UpdateSourceTrigger=PropertyChanged}" />
-        <TextBlock Style="{StaticResource Muted}" Text="Например: http://10.0.1.9:8088/. После смены адреса нужно войти заново." Margin="0,2,0,0" />
+        <TextBlock Style="{StaticResource Muted}" Text="Например: https://10.0.1.9:8443/. После смены адреса нужно войти заново." Margin="0,2,0,0" />
+
+        <TextBlock Text="Сертификат сервера" Style="{StaticResource SubHeader}" />
+        <DockPanel>
+            <Button DockPanel.Dock="Right" Style="{StaticResource PlainButton}" Content="Забыть" Command="{Binding ForgetCertificateCommand}" Margin="6,0,0,0"
+                    ToolTip="Забыть доверенный отпечаток: при следующем подключении клиент снова покажет отпечаток и спросит" />
+            <Button DockPanel.Dock="Right" Style="{StaticResource IconButton}" Tag="&#xE703;" Content="Проверить подключение" Command="{Binding CheckConnectionCommand}" Margin="6,0,0,0" />
+            <TextBox Text="{Binding CertificateText, Mode=OneWay}" IsReadOnly="True" TextWrapping="Wrap" FontFamily="Consolas" />
+        </DockPanel>
+        <TextBlock Style="{StaticResource Muted}" Margin="0,2,0,0" TextWrapping="Wrap"
+                   Text="Сервер использует самоподписанный сертификат. При первом подключении клиент показывает его отпечаток SHA-256 — сверьте его с администратором PDM." />
+        <TextBlock Text="{Binding ConnectionStatus}" TextWrapping="Wrap" Margin="0,4,0,0"
+                   Visibility="{Binding ConnectionStatus, Converter={StaticResource NullVis}}" />
+        <DockPanel Margin="0,4,0,0" Visibility="{Binding Busy.IsBusy, Converter={StaticResource BoolVis}}">
+            <ProgressBar IsIndeterminate="True" Height="4" Margin="0,0,0,4" DockPanel.Dock="Top" />
+            <TextBlock Text="{Binding Busy.StatusText}" Style="{StaticResource Muted}" />
+        </DockPanel>
 
         <TextBlock Text="Папка кэша" Style="{StaticResource SubHeader}" />
         <DockPanel>

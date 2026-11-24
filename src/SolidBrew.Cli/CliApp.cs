@@ -62,6 +62,10 @@ public sealed partial class CliApp
         {
             return Fail(ex.Message, ex.ExitCode, ex, verbose, json);
         }
+        catch (PdmApiException ex) when (UntrustedServerCertificateException.Find(ex) is { } untrusted)
+        {
+            return FailUntrusted(untrusted, ex, verbose, json);
+        }
         catch (PdmApiException ex)
         {
             var message = ex.Message;
@@ -95,6 +99,18 @@ public sealed partial class CliApp
             }
             _disposables.Clear();
         }
+    }
+
+    /// <summary>Неизвестный сертификат сервера: отпечаток и команда, которой ему довериться. Код 2 — нужен ответ пользователя.</summary>
+    private int FailUntrusted(UntrustedServerCertificateException untrusted, Exception ex, bool verbose, bool json)
+    {
+        var server = untrusted.Server ?? Profile.ServerUrl;
+        Err.WriteLine(untrusted.Message);
+        Err.WriteLine($"Если отпечаток совпадает с сообщённым администратором, выполните: sbpdm server {server} --trust {untrusted.Thumbprint}");
+        if (verbose) Err.WriteLine(ex.ToString());
+        if (json)
+            Out.WriteLine(JsonSerializer.Serialize(new { error = untrusted.Message, exitCode = NeedsAnswer, server, thumbprint = untrusted.Thumbprint }, JsonOut));
+        return NeedsAnswer;
     }
 
     private int Fail(string message, int code, Exception ex, bool verbose, bool json)
@@ -187,7 +203,7 @@ public sealed partial class CliApp
             if (!Profile.HasValidToken)
                 throw new CliException($"Не выполнен вход в PDM ({Profile.ServerUrl}). Выполните: sbpdm login" +
                                        (Profile.Login != null ? $" --user {Profile.Login}" : string.Empty));
-            _api = _env.ApiFactory(Profile.ServerUrl, Profile.Token);
+            _api = _env.ApiFactory(Profile.ServerUrl, Profile.Token, Profile.TrustedCertificateThumbprint);
             return _api;
         }
     }

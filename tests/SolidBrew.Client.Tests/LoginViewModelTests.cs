@@ -1,3 +1,4 @@
+using SolidBrew.Client.Infrastructure;
 using SolidBrew.Client.ViewModels;
 using SolidBrew.Core.Api;
 using SolidBrew.Core.Contracts;
@@ -128,5 +129,117 @@ public sealed class LoginViewModelTests : IDisposable
         Assert.False(main.ImportCommand.CanExecute(null));
         Assert.False(main.CheckinCommand.CanExecute(null));
         Assert.Null(main.Admin);
+    }
+
+    private static ServerCertificateInfo Certificate(char fill = 'C') =>
+        new(new string(fill, 64), "CN=D-VPAVLOV", DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddYears(5), System.Net.Security.SslPolicyErrors.RemoteCertificateChainErrors);
+
+    [Fact]
+    public async Task Login_UnknownCertificate_AsksWithThumbprint_TrustSavedAndLoginRetried()
+    {
+        var cert = Certificate();
+        _env.Factory.ServerCertificate = cert;
+        var vm = Create(new ClientProfile { ServerUrl = "https://pdm:8443/", CacheRoot = _env.Path("cache"), EnableTestCad = true });
+        vm.Login = "ivanov";
+        vm.Password = "secret";
+
+        await vm.LoginCommand.ExecuteAsync(null);
+
+        var ask = Assert.Single(_env.Dialogs.Confirms);
+        Assert.Equal(CertificateTrust.DialogTitle, ask.Title);
+        Assert.Contains("Сервер предъявил неизвестный сертификат", ask.Message);
+        Assert.Contains(cert.DisplayThumbprint, ask.Message);
+        Assert.Contains("Сверьте", ask.Message);
+        Assert.Contains("Доверять", ask.Message);
+        Assert.Contains(ask.Details, d => d.Contains("https://pdm:8443/"));
+
+        Assert.NotNull(vm.Session);
+        Assert.Null(vm.ErrorMessage);
+        Assert.Equal(new string?[] { null, cert.Thumbprint }, _env.Factory.Thumbprints);
+        Assert.Equal(cert.Thumbprint, _env.Profiles.Stored.TrustedCertificateThumbprint);
+
+        // Следующий вход с тем же сертификатом — без вопроса.
+        var again = Create(_env.Profiles.Stored);
+        again.Password = "secret";
+        await again.LoginCommand.ExecuteAsync(null);
+        Assert.NotNull(again.Session);
+        Assert.Single(_env.Dialogs.Confirms);
+    }
+
+    [Fact]
+    public async Task Login_UnknownCertificate_Declined_NoSessionAndNothingTrusted()
+    {
+        var cert = Certificate();
+        _env.Factory.ServerCertificate = cert;
+        _env.Dialogs.ConfirmAnswers.Enqueue(false);
+        var vm = Create(new ClientProfile { ServerUrl = "https://pdm:8443/", CacheRoot = _env.Path("cache") });
+        vm.Login = "ivanov";
+        vm.Password = "secret";
+
+        await vm.LoginCommand.ExecuteAsync(null);
+
+        Assert.Null(vm.Session);
+        Assert.NotNull(vm.ErrorMessage);
+        Assert.Contains(cert.DisplayThumbprint, vm.ErrorMessage);
+        Assert.Null(_env.Profiles.Stored.TrustedCertificateThumbprint);
+        Assert.Equal(0, _env.Factory.LastApi!.LoginCalls); // пароль на сервер с неизвестным сертификатом не уходил
+    }
+
+    [Fact]
+    public async Task Login_CertificateChanged_AsksAgain()
+    {
+        _env.Factory.ServerCertificate = Certificate('D');
+        _env.Dialogs.ConfirmAnswers.Enqueue(false);
+        var profile = new ClientProfile { ServerUrl = "https://pdm:8443/", TrustedCertificateThumbprint = new string('C', 64), CacheRoot = _env.Path("cache") };
+        var vm = Create(profile);
+        vm.Login = "ivanov";
+        vm.Password = "secret";
+
+        await vm.LoginCommand.ExecuteAsync(null);
+
+        Assert.Single(_env.Dialogs.Confirms);
+        Assert.Null(vm.Session);
+        Assert.Equal(new string('C', 64), profile.TrustedCertificateThumbprint); // отказ не меняет доверенный отпечаток
+        Assert.Contains(new string('D', 2) + ":" + new string('D', 2), vm.ErrorMessage);
+    }
+
+    [Fact]
+    public async Task Resume_UnknownCertificate_KeepsSavedSession()
+    {
+        _env.Factory.ServerCertificate = Certificate();
+        _env.Dialogs.ConfirmAnswers.Enqueue(false);
+        var profile = new ClientProfile { ServerUrl = "https://pdm:8443/", Login = "ivanov", Token = "token-ivanov", TokenExpiresAt = DateTimeOffset.UtcNow.AddHours(1), CacheRoot = _env.Path("cache") };
+        var vm = Create(profile);
+
+        Assert.False(await vm.TryResumeAsync());
+
+        Assert.Contains("SHA-256", vm.ErrorMessage);
+        Assert.Equal("token-ivanov", profile.Token); // сеанс не сброшен: дело в сертификате
+    }
+
+    [Fact]
+    public async Task Settings_CheckConnection_TrustsCertificate_SavedOnSave_ForgetClears()
+    {
+        var cert = Certificate();
+        _env.Factory.ServerCertificate = cert;
+        var profile = new ClientProfile { ServerUrl = "https://pdm:8443/", CacheRoot = _env.Path("cache") };
+        var vm = new SettingsViewModel(_env.Services, profile);
+        Assert.False(vm.ForgetCertificateCommand.CanExecute(null));
+
+        await vm.CheckConnectionCommand.ExecuteAsync(null);
+
+        Assert.Single(_env.Dialogs.Confirms);
+        Assert.Null(vm.ErrorMessage);
+        Assert.Contains("Сервер отвечает", vm.ConnectionStatus);
+        Assert.Contains(cert.DisplayThumbprint, vm.CertificateText);
+        Assert.Null(profile.TrustedCertificateThumbprint); // до «Сохранить» профиль не меняется
+        vm.SaveCommand.Execute(null);
+        Assert.Equal(cert.Thumbprint, _env.Profiles.Stored.TrustedCertificateThumbprint);
+
+        var again = new SettingsViewModel(_env.Services, _env.Profiles.Stored);
+        Assert.True(again.ForgetCertificateCommand.CanExecute(null));
+        again.ForgetCertificateCommand.Execute(null);
+        again.SaveCommand.Execute(null);
+        Assert.Null(_env.Profiles.Stored.TrustedCertificateThumbprint);
     }
 }

@@ -1,6 +1,8 @@
 using Dapper;
 using Microsoft.AspNetCore.Diagnostics;
 using Microsoft.AspNetCore.Http.Features;
+using System.Security.Cryptography;
+using System.Security.Cryptography.X509Certificates;
 using Npgsql;
 using SolidBrew.Api;
 using SolidBrew.Api.Auth;
@@ -17,8 +19,30 @@ DefaultTypeMap.MatchNamesWithUnderscores = true;
 var builder = WebApplication.CreateBuilder(args);
 
 // Общий предел тела — под самый большой объект архива; для JSON-запросов он понижается в промежуточном слое ниже.
+// HTTPS — если задан PFX (PDM_TLS_PFX_PATH): тогда Kestrel слушает HTTPS и, для локальной диагностики, HTTP;
+// без PFX — как раньше, адреса из ASPNETCORE_HTTP_PORTS / ASPNETCORE_URLS (только HTTP).
+string? tlsThumbprint = null;
 builder.WebHost.ConfigureKestrel((context, kestrel) =>
-    kestrel.Limits.MaxRequestBodySize = PdmOptions.FromConfiguration(context.Configuration).MaxObjectBytes);
+{
+    var options = PdmOptions.FromConfiguration(context.Configuration);
+    kestrel.Limits.MaxRequestBodySize = options.MaxObjectBytes;
+    if (options.TlsPfxPath is not { } pfx) return;
+    X509Certificate2 certificate;
+    try
+    {
+        certificate = X509CertificateLoader.LoadPkcs12FromFile(pfx, options.TlsPfxPassword);
+    }
+    catch (Exception ex) when (ex is CryptographicException or IOException or UnauthorizedAccessException)
+    {
+        throw new InvalidOperationException(
+            $"Не удалось открыть сертификат HTTPS «{pfx}» (PDM_TLS_PFX_PATH): {ex.Message} Проверьте файл и пароль PDM_TLS_PFX_PASSWORD.", ex);
+    }
+    if (!certificate.HasPrivateKey)
+        throw new InvalidOperationException($"В сертификате «{pfx}» нет закрытого ключа. Создайте его заново: tools/New-ServerCert.ps1.");
+    tlsThumbprint = Convert.ToHexString(SHA256.HashData(certificate.RawData));
+    kestrel.ListenAnyIP(options.HttpsPort, listen => listen.UseHttps(certificate));
+    if (options.HttpPort is { } httpPort) kestrel.ListenAnyIP(httpPort);
+});
 
 builder.Services.ConfigureHttpJsonOptions(o => PdmJson.Apply(o.SerializerOptions));
 builder.Services.AddSingleton(sp => PdmOptions.FromConfiguration(sp.GetRequiredService<IConfiguration>()));
@@ -40,6 +64,15 @@ var app = builder.Build();
     var logger = app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("SolidBrew.Startup");
     await Migrator.MigrateAsync(options, logger);
     await Seeder.SeedAsync(app.Services.GetRequiredService<NpgsqlDataSource>(), options, logger);
+    app.Lifetime.ApplicationStarted.Register(() =>
+    {
+        if (tlsThumbprint != null)
+            logger.LogInformation("HTTPS: порт {HttpsPort}, сертификат SHA-256 {Thumbprint}. HTTP: {HttpPort}.",
+                options.HttpsPort, string.Join(':', Enumerable.Range(0, tlsThumbprint.Length / 2).Select(i => tlsThumbprint.Substring(i * 2, 2))),
+                options.HttpPort?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "выключен");
+        else
+            logger.LogWarning("HTTPS не настроен (PDM_TLS_PFX_PATH не задан): сервер работает только по HTTP.");
+    });
 }
 
 app.UseExceptionHandler(errorApp => errorApp.Run(async context =>

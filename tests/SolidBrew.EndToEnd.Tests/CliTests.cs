@@ -35,7 +35,7 @@ public sealed class CliTests(ServerFixture fx) : IDisposable
                 In = new StringReader(stdin ?? string.Empty),
                 CurrentDirectory = Cwd,
                 ProfilePath = dir.Path(name, "profile.json"),
-                ApiFactory = (_, token) => fx.NewClient(token: token),
+                ApiFactory = (_, token, _) => fx.NewClient(token: token),
                 ReadSecret = _ => throw new InvalidOperationException("Пароль должен передаваться через --password-stdin."),
             };
             var code = await new CliApp(env).RunAsync(args);
@@ -275,5 +275,64 @@ public sealed class CliTests(ServerFixture fx) : IDisposable
         Assert.Equal(1, JsonDocument.Parse(json.Out).RootElement.GetProperty("exitCode").GetInt32());
 
         Assert.Equal(0, await SolidBrew.Cli.Program.Main(new[] { "--version" }));
+    }
+
+    /// <summary>
+    /// Неизвестный сертификат сервера: «server &lt;адрес&gt;» и «login» печатают отпечаток SHA-256 и выходят с кодом 2;
+    /// «server … --trust &lt;отпечаток&gt;» сохраняет отпечаток, только если сервер предъявил именно его.
+    /// </summary>
+    [Fact]
+    public async Task Cli_UnknownServerCertificate_PrintsThumbprint_Code2_ThenTrust()
+    {
+        var user = await fx.NewUserAsync("tls");
+        var serverThumb = new string('5', 64);
+        var cert = new SolidBrew.Workspace.ServerCertificateInfo(serverThumb, "CN=D-VPAVLOV", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow.AddYears(5),
+            System.Net.Security.SslPolicyErrors.RemoteCertificateChainErrors);
+        var used = new List<string?>();
+        SolidBrew.Core.Api.IPdmApi Factory(string url, string? token, string? thumbprint)
+        {
+            used.Add(thumbprint);
+            if (thumbprint != serverThumb)
+            {
+                var untrusted = new SolidBrew.Workspace.UntrustedServerCertificateException(cert, new Uri(url));
+                throw new SolidBrew.Core.Api.PdmApiException(0, "Нет связи с сервером PDM: " + untrusted.Message, null, untrusted);
+            }
+            return fx.NewClient(token: token);
+        }
+
+        async Task<Run> Cli(string? stdin, params string[] args)
+        {
+            var output = new StringWriter();
+            var error = new StringWriter();
+            var env = new CliEnvironment
+            {
+                Out = output, Err = error, In = new StringReader(stdin ?? string.Empty), CurrentDirectory = _dir.Root,
+                ProfilePath = _dir.Path("tls", "profile.json"), ApiFactory = Factory, UseSolidWorks = false,
+            };
+            return new Run(await new CliApp(env).RunAsync(args), output.ToString(), error.ToString());
+        }
+
+        var display = SolidBrew.Workspace.ServerCertificateValidator.FormatThumbprint(serverThumb);
+        var first = await Cli(null, "server", "https://10.0.1.9:8443/");
+        AssertCode(CliApp.NeedsAnswer, first);
+        Assert.Contains(display, first.Err);
+        Assert.Contains("sbpdm server https://10.0.1.9:8443/ --trust " + serverThumb, first.Err);
+
+        var login = await Cli(ServerFixture.UserPassword + "\n", "login", "--user", user.Login, "--password-stdin");
+        AssertCode(CliApp.NeedsAnswer, login);
+        Assert.Contains(display, login.Err);
+
+        var wrong = await Cli(null, "server", "https://10.0.1.9:8443/", "--trust", new string('6', 64));
+        AssertCode(CliApp.NeedsAnswer, wrong);
+        Assert.Contains("не совпадает", wrong.Err);
+        Assert.Contains(display, wrong.Err);
+
+        var trusted = await Cli(null, "server", "https://10.0.1.9:8443/", "--trust", display.ToLowerInvariant());
+        AssertCode(CliApp.Ok, trusted);
+        Assert.Contains("Доверенный сертификат: SHA-256 " + display, trusted.Out);
+
+        login = await Cli(ServerFixture.UserPassword + "\n", "login", "--user", user.Login, "--password-stdin");
+        AssertCode(CliApp.Ok, login);
+        Assert.Equal(serverThumb, used[^1]);
     }
 }

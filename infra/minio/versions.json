@@ -1,0 +1,13 @@
+{
+  "comment": "Зафиксированные бинарники MinIO для Windows amd64 (tools/Install-Server.ps1 проверяет SHA-256 перед установкой). На 24.11.2026 https://dl.min.io/ отвечает 410 Gone на все community-сборки (server/minio/release/windows-amd64/ и client/mc/release/windows-amd64/, включая archive/): проект MinIO community архивирован. Версии не заполнены, пока не выбран источник бинарников.",
+  "minio": {
+    "version": null,
+    "url": "https://dl.min.io/server/minio/release/windows-amd64/minio.exe",
+    "sha256": null
+  },
+  "mc": {
+    "version": null,
+    "url": "https://dl.min.io/client/mc/release/windows-amd64/mc.exe",
+    "sha256": null
+  }
+}

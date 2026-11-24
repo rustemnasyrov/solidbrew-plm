@@ -46,7 +46,11 @@ public interface IProfileStore
 /// <summary>Создание клиента API и службы рабочих папок.</summary>
 public interface IClientFactory
 {
-    IPdmApi CreateApi(string serverUrl, string? token);
+    /// <summary>
+    /// Клиент API. <paramref name="trustedThumbprint"/> — SHA-256-отпечаток самоподписанного сертификата сервера,
+    /// которому доверился пользователь (null — только сертификаты, подтверждённые Windows).
+    /// </summary>
+    IPdmApi CreateApi(string serverUrl, string? token, string? trustedThumbprint);
 
     WorkspaceService CreateWorkspace(IPdmApi api, ClientProfile profile);
 }

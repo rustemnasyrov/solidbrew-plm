@@ -4,13 +4,17 @@
 .DESCRIPTION
     Новый файл создаётся целиком. В существующий дописываются только недостающие ключи;
     имеющиеся значения не меняются. Секреты генерируются криптографически стойким генератором.
-    PDM_ARCHIVE_DIR — папка данных MinIO (служба Windows вне Docker); папка создаётся.
+    PDM_ARCHIVE_DIR — папка данных MinIO (задача планировщика вне Docker, tools/Install-Server.ps1); папка создаётся.
+    PDM_BIND_ADDRESS — адрес хоста, на котором API принимает HTTPS (адрес сервера в ЛВС; 127.0.0.1 — только локально).
+    Сертификат HTTPS (PDM_TLS_PFX_PATH, PDM_TLS_PFX_PASSWORD) создаёт tools/New-ServerCert.ps1.
 #>
 [CmdletBinding()]
 param(
     [string]$Output,
     [string]$ArchiveDir = (Join-Path $HOME 'SolidBrewArchive'),
-    [string]$S3Endpoint = 'http://host.docker.internal:9000'
+    [string]$S3Endpoint = 'http://host.docker.internal:9000',
+    [string]$BindAddress = '127.0.0.1',
+    [int]$HttpsPort = 8443
 )
 $ErrorActionPreference = 'Stop'
 if (-not $Output) {
@@ -33,10 +37,13 @@ $defaults = [ordered]@{
     PDM_DB_PASSWORD              = { New-Secret }
     PDM_APP_DB_PASSWORD          = { New-Secret }
     PDM_BOOTSTRAP_ADMIN_PASSWORD = { New-Secret 12 }
+    PDM_MINIO_ROOT_USER          = { 'pdm-root' }
     PDM_MINIO_ROOT_PASSWORD      = { New-Secret }
     PDM_S3_SECRET_KEY            = { New-Secret }
     PDM_S3_ENDPOINT              = { $S3Endpoint }
     PDM_ARCHIVE_DIR              = { $archive.Replace('\', '/') }
+    PDM_BIND_ADDRESS             = { $BindAddress }
+    PDM_HTTPS_PORT               = { $HttpsPort }
 }
 
 $existing = @{}

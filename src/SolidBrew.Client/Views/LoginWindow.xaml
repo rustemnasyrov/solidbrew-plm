@@ -31,7 +31,7 @@
             </Grid.RowDefinitions>
             <TextBlock Text="Сервер" VerticalAlignment="Center" Margin="0,0,10,8" />
             <TextBox Grid.Column="1" Margin="0,0,0,8" Text="{Binding ServerUrl, UpdateSourceTrigger=PropertyChanged}"
-                     ToolTip="Адрес сервера PDM, например http://10.0.1.9:8088/" />
+                     ToolTip="Адрес сервера PDM, например https://10.0.1.9:8443/" />
             <TextBlock Grid.Row="1" Text="Логин" VerticalAlignment="Center" Margin="0,0,10,8" />
             <TextBox Grid.Row="1" Grid.Column="1" Margin="0,0,0,8" Text="{Binding Login, UpdateSourceTrigger=PropertyChanged}" />
             <TextBlock Grid.Row="2" Text="Пароль" VerticalAlignment="Center" Margin="0,0,10,8" />
