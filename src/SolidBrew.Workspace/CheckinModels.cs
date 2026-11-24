@@ -35,7 +35,15 @@ public sealed class ResolvedReference
 /// <summary>Кандидат на сдачу: взятый и изменённый документ, взятый неизменённый или черновик.</summary>
 public sealed class CheckinCandidate
 {
+    /// <summary>Путь в рабочей папке.</summary>
     public string RelPath { get; init; } = string.Empty;
+    /// <summary>
+    /// Путь, под которым документ сдаётся: собственный путь документа (у документа чужого проекта — без подпапки проекта),
+    /// у черновика — путь в рабочей папке.
+    /// </summary>
+    public string DocumentRelPath { get; init; } = string.Empty;
+    /// <summary>Подпапка проекта документа чужого проекта; null — документ проекта рабочей папки или черновик.</summary>
+    public string? ProjectFolder { get; init; }
     public string FullPath { get; init; } = string.Empty;
     public string FileName => Texts.FileNameOf(RelPath);
     /// <summary>Новый документ (черновой).</summary>

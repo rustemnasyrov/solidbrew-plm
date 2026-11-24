@@ -64,7 +64,15 @@ public sealed class OpenPlanItem
     public Guid DocumentId { get; init; }
     public int Version { get; init; }
     public int LatestVersion { get; init; }
+    /// <summary>Путь в рабочей папке (для документа чужого проекта — с подпапкой проекта).</summary>
     public string RelPath { get; init; } = string.Empty;
+    /// <summary>Собственный путь документа в хранилище (без подпапки проекта).</summary>
+    public string DocumentRelPath { get; init; } = string.Empty;
+    /// <summary>Подпапка проекта для документа чужого проекта или библиотеки; null — документ проекта рабочей папки.</summary>
+    public string? ProjectFolder { get; init; }
+    public Guid ProjectId { get; init; }
+    /// <summary>Чертёж (или его зависимость), добавленный к комплекту при открытии с чертежами.</summary>
+    public bool IsAttachedDrawing { get; init; }
     public string FullPath { get; init; } = string.Empty;
     public string FileName => Texts.FileNameOf(RelPath);
     public string Sha256 { get; init; } = string.Empty;
@@ -99,6 +107,7 @@ public sealed class OpenPlan
     public Guid ProjectId { get; init; }
     public Guid HeadDocumentId { get; init; }
     public int HeadVersion { get; init; }
+    /// <summary>Путь головного документа в рабочей папке.</summary>
     public string HeadRelPath { get; init; } = string.Empty;
     public string HeadCad { get; init; } = string.Empty;
     /// <summary>«Обновить до последней версии» в существующей рабочей папке.</summary>

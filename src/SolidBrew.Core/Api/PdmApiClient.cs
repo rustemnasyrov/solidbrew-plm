@@ -75,15 +75,15 @@ namespace SolidBrew.Core.Api
         // --- Документы ---
 
         public Task<List<DocumentSummaryDto>> SearchDocumentsAsync(string? q = null, Guid? projectId = null, string? author = null,
-            bool includeUnused = false, int? limit = null, CancellationToken ct = default) =>
+            bool includeUnused = false, int? limit = null, bool roots = false, CancellationToken ct = default) =>
             SendJsonAsync<List<DocumentSummaryDto>>(HttpMethod.Get,
-                ApiRoutes.SearchDocuments(q, projectId, author, includeUnused, limit), null, ct);
+                ApiRoutes.SearchDocuments(q, projectId, author, includeUnused, limit, roots), null, ct);
 
         public Task<DocumentDetailDto> GetDocumentAsync(Guid id, CancellationToken ct = default) =>
             SendJsonAsync<DocumentDetailDto>(HttpMethod.Get, ApiRoutes.Document(id), null, ct);
 
-        public Task<KitDto> GetKitAsync(Guid id, int version, CancellationToken ct = default) =>
-            SendJsonAsync<KitDto>(HttpMethod.Get, ApiRoutes.Kit(id, version), null, ct);
+        public Task<KitDto> GetKitAsync(Guid id, int version, bool includeDrawings = false, CancellationToken ct = default) =>
+            SendJsonAsync<KitDto>(HttpMethod.Get, ApiRoutes.Kit(id, version, includeDrawings), null, ct);
 
         public Task<WhereUsedDto> GetWhereUsedAsync(Guid id, int version, CancellationToken ct = default) =>
             SendJsonAsync<WhereUsedDto>(HttpMethod.Get, ApiRoutes.WhereUsed(id, version), null, ct);

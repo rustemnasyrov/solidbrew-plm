@@ -90,8 +90,13 @@ public sealed class FakePdmServer
             LatestAuthorDisplayName = v.Author.DisplayName,
             LatestAt = v.At,
             Lock = Clone(d.Lock),
+            UsedInCount = UsedInCount(d),
         };
     }
+
+    /// <summary>Сколько активных документов (кроме чертежей) ссылаются последней версией на какую-либо версию документа.</summary>
+    internal int UsedInCount(FakeDoc d) => Docs.Values.Count(p => p.Id != d.Id && p.Status == DocumentStatus.Active &&
+        p.Latest.Kind != DocumentKind.Drawing && p.Latest.Refs.Any(r => r.Child == d.Id));
 
     internal static LockDto? Clone(LockDto? l) => l == null ? null : new LockDto { DocumentId = l.DocumentId, UserId = l.UserId, UserLogin = l.UserLogin, UserDisplayName = l.UserDisplayName, At = l.At };
 
@@ -123,7 +128,7 @@ public sealed class FakePdmServer
         }).ToList(),
     };
 
-    internal KitDto Kit(Guid id, int version)
+    internal KitDto Kit(Guid id, int version, bool includeDrawings = false)
     {
         if (!Docs.TryGetValue(id, out var head) || head.Versions.All(v => v.Number != version))
             throw Error(404, "Версия документа не найдена.");
@@ -427,10 +432,11 @@ public sealed class FakePdmApi : IPdmApi
 
     public Task<ProjectDto> CreateProjectAsync(CreateProjectRequest request, CancellationToken ct = default) => Run(() => _s.AddProject(request.Name, request.Kind));
 
-    public Task<List<DocumentSummaryDto>> SearchDocumentsAsync(string? q = null, Guid? projectId = null, string? author = null, bool includeUnused = false, int? limit = null, CancellationToken ct = default) =>
+    public Task<List<DocumentSummaryDto>> SearchDocumentsAsync(string? q = null, Guid? projectId = null, string? author = null, bool includeUnused = false, int? limit = null, bool roots = false, CancellationToken ct = default) =>
         Run(() => _s.Docs.Values
             .Where(d => projectId == null || d.ProjectId == projectId)
             .Where(d => includeUnused || d.Status == DocumentStatus.Active)
+            .Where(d => !roots || (d.Status == DocumentStatus.Active && d.Latest.Kind == DocumentKind.Assembly && _s.UsedInCount(d) == 0))
             .Select(_s.Summary)
             .Where(d => q == null || d.RelPath.Contains(q, StringComparison.OrdinalIgnoreCase) || (d.Designation ?? "").Contains(q, StringComparison.OrdinalIgnoreCase))
             .Take(Math.Clamp(limit ?? 50, 1, _s.SearchLimitCap)).ToList());
@@ -445,7 +451,7 @@ public sealed class FakePdmApi : IPdmApi
         };
     });
 
-    public Task<KitDto> GetKitAsync(Guid id, int version, CancellationToken ct = default) => Run(() => _s.Kit(id, version));
+    public Task<KitDto> GetKitAsync(Guid id, int version, bool includeDrawings = false, CancellationToken ct = default) => Run(() => _s.Kit(id, version, includeDrawings));
 
     public Task<WhereUsedDto> GetWhereUsedAsync(Guid id, int version, CancellationToken ct = default) => Run(() => _s.WhereUsed(id, version));
 

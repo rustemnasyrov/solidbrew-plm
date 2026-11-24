@@ -78,7 +78,7 @@ public sealed class ImportDocument
     public List<string> Configurations { get; init; } = new();
     public Dictionary<string, Dictionary<string, string>> Properties { get; init; } = new();
     public bool IsHead { get; init; }
-    /// <summary>Найден в дополнительных папках по своим ссылкам на комплект (чертёж, спецификация).</summary>
+    /// <summary>Найден в папке головного файла (с подпапками) или в дополнительных папках по своим ссылкам на комплект (чертёж, спецификация).</summary>
     public bool IsExtra { get; init; }
     /// <summary>Для документов из дополнительных папок: включить в постановку (по умолчанию — да).</summary>
     public bool Include { get; set; } = true;

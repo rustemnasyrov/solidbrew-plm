@@ -129,8 +129,14 @@ public sealed partial class CliApp
     {
         var doc = await ResolveDocumentAsync(Need(0, "документ")).ConfigureAwait(false);
         var root = _args.Value("to") is { } to ? FullPath(to) : FindWorkspace(BaseDir) ?? BaseDir;
-        var plan = await Service.PrepareOpenAsync(root, doc.Id, _args.Int("version"), Progress, _ct).ConfigureAwait(false);
-        return await ExecuteOpenPlanAsync(plan, _args.Flag("verify")).ConfigureAwait(false);
+        var plan = await Service.PrepareOpenAsync(root, doc.Id, _args.Int("version"), Progress, _ct, includeDrawings: _args.Flag("with-drawings")).ConfigureAwait(false);
+        var code = await ExecuteOpenPlanAsync(plan, _args.Flag("verify")).ConfigureAwait(false);
+        if (code == Ok)
+        {
+            Profile.RememberProduct(plan.HeadDocumentId, plan.WorkRoot, doc.Designation, doc.Name);
+            SaveProfile();
+        }
+        return code;
     }
 
     private async Task<int> UpdateAsync()

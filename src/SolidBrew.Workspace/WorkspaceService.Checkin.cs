@@ -173,6 +173,8 @@ public sealed partial class WorkspaceService
             var cand = new CheckinCandidate
             {
                 RelPath = f.RelPath,
+                DocumentRelPath = e?.DocumentRelPath ?? f.RelPath,
+                ProjectFolder = e?.ProjectFolder,
                 FullPath = f.FullPath,
                 IsDraft = e == null,
                 DocumentId = e?.DocumentId,
@@ -300,7 +302,7 @@ public sealed partial class WorkspaceService
                 DocumentId = c.IsDraft ? null : c.DocumentId,
                 TempKey = c.IsDraft ? c.TempKey : null,
                 BaseVersion = c.IsDraft ? null : c.BaseVersion,
-                RelPath = c.RelPath,
+                RelPath = c.DocumentRelPath,
                 Sha256 = c.Sha256,
                 Size = c.Size,
                 Cad = c.Cad,
@@ -397,6 +399,7 @@ public sealed partial class WorkspaceService
             state.Entries.Add(new WorkspaceEntry
             {
                 RelPath = c.RelPath,
+                ProjectFolder = c.ProjectFolder,
                 DocumentId = r.DocumentId,
                 Version = r.Version,
                 Sha256 = c.Sha256,

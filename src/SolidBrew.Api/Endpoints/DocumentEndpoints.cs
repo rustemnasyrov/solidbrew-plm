@@ -20,11 +20,12 @@ internal static class DocumentEndpoints
             [FromQuery(Name = ApiRoutes.Query.ProjectId)] Guid? projectId,
             [FromQuery(Name = ApiRoutes.Query.Author)] string? author,
             [FromQuery(Name = ApiRoutes.Query.IncludeUnused)] bool? includeUnused,
-            [FromQuery(Name = ApiRoutes.Query.Limit)] int? limit) =>
+            [FromQuery(Name = ApiRoutes.Query.Limit)] int? limit,
+            [FromQuery(Name = ApiRoutes.Query.Roots)] bool? roots) =>
         {
             var take = Math.Clamp(limit ?? 200, 1, 2000);
             await using var connection = await db.OpenConnectionAsync(ct);
-            return Results.Ok(await DocumentQueries.SearchAsync(connection, q, projectId, author, includeUnused ?? false, take));
+            return Results.Ok(await DocumentQueries.SearchAsync(connection, q, projectId, author, includeUnused ?? false, take, roots ?? false));
         });
 
         app.MapGet(ApiRoutes.Templates.Document, async (Guid id, NpgsqlDataSource db, CancellationToken ct) =>
@@ -33,11 +34,12 @@ internal static class DocumentEndpoints
             return await DocumentQueries.GetDetailAsync(connection, id) is { } detail ? Results.Ok(detail) : ApiErrors.DocumentNotFound(id);
         });
 
-        app.MapGet(ApiRoutes.Templates.Kit, async (Guid id, int version, NpgsqlDataSource db, CancellationToken ct) =>
+        app.MapGet(ApiRoutes.Templates.Kit, async (Guid id, int version, NpgsqlDataSource db, CancellationToken ct,
+            [FromQuery(Name = ApiRoutes.Query.IncludeDrawings)] bool? includeDrawings) =>
         {
             await using var connection = await db.OpenConnectionAsync(ct);
             if (!await KitQueries.VersionExistsAsync(connection, id, version)) return VersionNotFound(id, version);
-            return Results.Ok((await KitQueries.GetKitAsync(connection, id, version)).Kit);
+            return Results.Ok((await KitQueries.GetKitAsync(connection, id, version, includeDrawings ?? false)).Kit);
         });
 
         app.MapGet(ApiRoutes.Templates.WhereUsed, async (Guid id, int version, NpgsqlDataSource db, CancellationToken ct) =>

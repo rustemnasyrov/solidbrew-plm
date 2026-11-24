@@ -88,8 +88,13 @@ public sealed class FakePdmServer
             LatestAuthorDisplayName = v.Author.DisplayName,
             LatestAt = v.At,
             Lock = Clone(d.Lock),
+            UsedInCount = UsedInCount(d),
         };
     }
+
+    /// <summary>Сколько активных документов (кроме чертежей) ссылаются последней версией на какую-либо версию документа.</summary>
+    internal int UsedInCount(FakeDoc d) => Docs.Values.Count(p => p.Id != d.Id && p.Status == DocumentStatus.Active &&
+        p.Latest.Kind != DocumentKind.Drawing && p.Latest.Refs.Any(r => r.Child == d.Id));
 
     internal static LockDto? Clone(LockDto? l) => l == null ? null : new LockDto { DocumentId = l.DocumentId, UserId = l.UserId, UserLogin = l.UserLogin, UserDisplayName = l.UserDisplayName, At = l.At };
 
@@ -121,7 +126,8 @@ public sealed class FakePdmServer
         }).ToList(),
     };
 
-    internal KitDto Kit(Guid id, int version)
+    /// <summary>Комплект как у настоящего сервера, в том числе с чертежами (<paramref name="includeDrawings"/>).</summary>
+    internal KitDto Kit(Guid id, int version, bool includeDrawings = false)
     {
         if (!Docs.TryGetValue(id, out var head) || head.Versions.All(v => v.Number != version))
             throw Error(404, "Версия документа не найдена.");
@@ -133,38 +139,84 @@ public sealed class FakePdmServer
         while (queue.Count > 0)
         {
             var (did, ver) = queue.Dequeue();
-            var d = Docs[did];
-            var v = d.Versions.First(x => x.Number == ver);
-            kit.Items.Add(new KitItemDto
+            AddKitItem(kit, did, ver, attached: false);
+            foreach (var r in Docs[did].Versions.First(x => x.Number == ver).Refs)
             {
-                DocumentId = did,
-                Version = ver,
-                LatestVersion = d.Latest.Number,
-                RelPath = v.RelPath,
-                Sha256 = v.Sha256,
-                Size = v.Size,
-                Cad = v.Cad,
-                Kind = v.Kind,
-                CadVersion = v.CadVersion,
-                CadVersionMajor = v.CadVersionMajor,
-                Designation = DocumentProperties.Designation(v.Properties),
-                Name = DocumentProperties.Name(v.Properties),
-                Status = d.Status,
-                Lock = Clone(d.Lock),
-                ProjectId = d.ProjectId,
-            });
-            foreach (var r in v.Refs)
+                if (r.Child != null && seen.Add((r.Child.Value, r.ChildVersion!.Value))) queue.Enqueue((r.Child.Value, r.ChildVersion.Value));
+            }
+        }
+
+        if (includeDrawings)
+        {
+            var present = new HashSet<Guid>(kit.Items.Select(i => i.DocumentId));
+            var kitVersions = kit.Items.GroupBy(i => i.DocumentId).ToDictionary(g => g.Key, g => g.Select(i => i.Version).ToHashSet());
+            var drawings = Docs.Values
+                .Where(d => d.Status == DocumentStatus.Active && d.Latest.Kind == DocumentKind.Drawing && !present.Contains(d.Id)
+                            && d.Latest.Refs.Any(r => r.Child != null && kitVersions.ContainsKey(r.Child.Value)))
+                .OrderBy(d => d.Latest.RelPath, StringComparer.OrdinalIgnoreCase).ToList();
+            var frontier = new List<(Guid, int)>();
+            foreach (var d in drawings)
+            {
+                present.Add(d.Id);
+                frontier.Add((d.Id, d.Latest.Number));
+                var item = AddKitItem(kit, d.Id, d.Latest.Number, attached: true);
+                item.DrawingModelVersionMismatch = d.Latest.Refs.Any(r =>
+                    r.Child != null && kitVersions.TryGetValue(r.Child.Value, out var vs) && !vs.Contains(r.ChildVersion!.Value));
+            }
+            while (frontier.Count > 0)
+            {
+                var next = new List<(Guid, int)>();
+                foreach (var (did, ver) in frontier)
+                {
+                    foreach (var r in Docs[did].Versions.First(x => x.Number == ver).Refs)
+                    {
+                        if (r.Child == null || !present.Add(r.Child.Value)) continue;
+                        AddKitItem(kit, r.Child.Value, r.ChildVersion!.Value, attached: true);
+                        next.Add((r.Child.Value, r.ChildVersion.Value));
+                    }
+                }
+                frontier = next;
+            }
+        }
+
+        foreach (var it in kit.Items)
+        {
+            foreach (var r in Docs[it.DocumentId].Versions.First(x => x.Number == it.Version).Refs)
             {
                 if (r.Child == null)
-                {
-                    kit.Unresolved.Add(new KitUnresolvedRefDto { ParentDocumentId = did, ParentVersion = ver, RefPath = r.RefPath });
-                    continue;
-                }
-                kit.Edges.Add(new KitEdgeDto { ParentDocumentId = did, ParentVersion = ver, ChildDocumentId = r.Child.Value, ChildVersion = r.ChildVersion!.Value, RefPath = r.RefPath });
-                if (seen.Add((r.Child.Value, r.ChildVersion.Value))) queue.Enqueue((r.Child.Value, r.ChildVersion.Value));
+                    kit.Unresolved.Add(new KitUnresolvedRefDto { ParentDocumentId = it.DocumentId, ParentVersion = it.Version, RefPath = r.RefPath });
+                else
+                    kit.Edges.Add(new KitEdgeDto { ParentDocumentId = it.DocumentId, ParentVersion = it.Version, ChildDocumentId = r.Child.Value, ChildVersion = r.ChildVersion!.Value, RefPath = r.RefPath });
             }
         }
         return kit;
+    }
+
+    private KitItemDto AddKitItem(KitDto kit, Guid did, int ver, bool attached)
+    {
+        var d = Docs[did];
+        var v = d.Versions.First(x => x.Number == ver);
+        var item = new KitItemDto
+        {
+            DocumentId = did,
+            Version = ver,
+            LatestVersion = d.Latest.Number,
+            RelPath = v.RelPath,
+            Sha256 = v.Sha256,
+            Size = v.Size,
+            Cad = v.Cad,
+            Kind = v.Kind,
+            CadVersion = v.CadVersion,
+            CadVersionMajor = v.CadVersionMajor,
+            Designation = DocumentProperties.Designation(v.Properties),
+            Name = DocumentProperties.Name(v.Properties),
+            Status = d.Status,
+            Lock = Clone(d.Lock),
+            ProjectId = d.ProjectId,
+            IsAttachedDrawing = attached,
+        };
+        kit.Items.Add(item);
+        return item;
     }
 
     internal WhereUsedDto WhereUsed(Guid id, int version)
@@ -411,10 +463,11 @@ public sealed class FakePdmApi : IPdmApi
 
     public Task<ProjectDto> CreateProjectAsync(CreateProjectRequest request, CancellationToken ct = default) => Run(() => _s.AddProject(request.Name, request.Kind));
 
-    public Task<List<DocumentSummaryDto>> SearchDocumentsAsync(string? q = null, Guid? projectId = null, string? author = null, bool includeUnused = false, int? limit = null, CancellationToken ct = default) =>
+    public Task<List<DocumentSummaryDto>> SearchDocumentsAsync(string? q = null, Guid? projectId = null, string? author = null, bool includeUnused = false, int? limit = null, bool roots = false, CancellationToken ct = default) =>
         Run(() => _s.Docs.Values
             .Where(d => projectId == null || d.ProjectId == projectId)
             .Where(d => includeUnused || d.Status == DocumentStatus.Active)
+            .Where(d => !roots || (d.Status == DocumentStatus.Active && d.Latest.Kind == DocumentKind.Assembly && _s.UsedInCount(d) == 0))
             .Select(_s.Summary)
             .Where(d => q == null || d.RelPath.Contains(q, StringComparison.OrdinalIgnoreCase) || (d.Designation ?? "").Contains(q, StringComparison.OrdinalIgnoreCase))
             .Take(Math.Clamp(limit ?? 50, 1, _s.SearchLimitCap)).ToList());
@@ -429,7 +482,7 @@ public sealed class FakePdmApi : IPdmApi
         };
     });
 
-    public Task<KitDto> GetKitAsync(Guid id, int version, CancellationToken ct = default) => Run(() => _s.Kit(id, version));
+    public Task<KitDto> GetKitAsync(Guid id, int version, bool includeDrawings = false, CancellationToken ct = default) => Run(() => _s.Kit(id, version, includeDrawings));
 
     public Task<WhereUsedDto> GetWhereUsedAsync(Guid id, int version, CancellationToken ct = default) => Run(() => _s.WhereUsed(id, version));
 

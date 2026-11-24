@@ -69,7 +69,16 @@ public sealed class WorkspaceState
 /// <summary>Учтённый файл рабочей папки: какая версия какого документа разложена.</summary>
 public sealed class WorkspaceEntry
 {
+    /// <summary>Путь файла в рабочей папке (для документа чужого проекта — с подпапкой проекта <see cref="ProjectFolder"/>).</summary>
     public string RelPath { get; set; } = string.Empty;
+    /// <summary>
+    /// Подпапка проекта, если документ из другого проекта, чем рабочая папка (документы чужого проекта и библиотеки
+    /// раскладываются в <c>&lt;папка&gt;/&lt;имя проекта&gt;/&lt;путь документа&gt;</c>); null — документ проекта рабочей папки.
+    /// </summary>
+    public string? ProjectFolder { get; set; }
+    /// <summary>Собственный относительный путь документа в хранилище (<see cref="RelPath"/> без подпапки проекта).</summary>
+    [System.Text.Json.Serialization.JsonIgnore]
+    public string DocumentRelPath => WorkspaceService.StripProjectFolder(ProjectFolder, RelPath);
     public Guid DocumentId { get; set; }
     public int Version { get; set; }
     /// <summary>Хеш содержимого версии, как оно опубликовано (разложено из кэша или сдано).</summary>

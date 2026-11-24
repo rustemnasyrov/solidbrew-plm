@@ -30,6 +30,17 @@ namespace SolidBrew.Core.Contracts
         public DocumentStatus Status { get; set; }
         public LockDto? Lock { get; set; }
         public Guid ProjectId { get; set; }
+        /// <summary>
+        /// Чертёж, добавленный к комплекту по запросу <c>includeDrawings</c>: последняя версия активного чертежа,
+        /// ссылающаяся на документ комплекта (сам комплект строится от головного документа вниз и чертежей не содержит).
+        /// Зависимости такого чертежа, которых не было в комплекте, тоже помечены этим признаком.
+        /// </summary>
+        public bool IsAttachedDrawing { get; set; }
+        /// <summary>
+        /// Для добавленного чертежа: его последняя версия ссылается на другую версию документа комплекта, чем та, что в комплекте
+        /// (рёбра чертежа указывают версию, с которой он сдан).
+        /// </summary>
+        public bool DrawingModelVersionMismatch { get; set; }
     }
 
     public sealed class KitEdgeDto

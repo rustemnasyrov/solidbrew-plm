@@ -22,9 +22,9 @@ namespace SolidBrew.Core
             public const string Notifications = "/api/me/notifications";                     // GET
             public const string NotificationsSeen = "/api/me/notifications/seen";            // POST
             public const string Projects = "/api/projects";                                  // GET, POST
-            public const string Documents = "/api/documents";                                // GET (поиск)
+            public const string Documents = "/api/documents";                                // GET (поиск) ?roots=
             public const string Document = "/api/documents/{id:guid}";                       // GET
-            public const string Kit = "/api/documents/{id:guid}/versions/{version:int}/kit";               // GET
+            public const string Kit = "/api/documents/{id:guid}/versions/{version:int}/kit";               // GET ?includeDrawings=
             public const string WhereUsed = "/api/documents/{id:guid}/versions/{version:int}/where-used";  // GET
             public const string Export = "/api/documents/{id:guid}/versions/{version:int}/export";         // GET ?derived=
             public const string DocumentJournal = "/api/documents/{id:guid}/journal";        // GET
@@ -50,6 +50,8 @@ namespace SolidBrew.Core
             public const string IncludeUnused = "includeUnused";
             public const string Limit = "limit";
             public const string Derived = "derived";
+            public const string IncludeDrawings = "includeDrawings";
+            public const string Roots = "roots";
         }
 
         public const string Login = Templates.Login;
@@ -64,7 +66,9 @@ namespace SolidBrew.Core
         public const string AdminLocks = Templates.AdminLocks;
         public const string AdminSettings = Templates.AdminSettings;
 
-        public static string SearchDocuments(string? q = null, Guid? projectId = null, string? author = null, bool includeUnused = false, int? limit = null)
+        /// <param name="roots">Только корневые изделия: активные сборки, на которые не ссылается последняя версия другого активного документа (кроме чертежей).</param>
+        public static string SearchDocuments(string? q = null, Guid? projectId = null, string? author = null, bool includeUnused = false, int? limit = null,
+            bool roots = false)
         {
             var query = new List<KeyValuePair<string, string>>();
             if (!string.IsNullOrWhiteSpace(q)) query.Add(Pair(Query.Q, q!));
@@ -72,12 +76,15 @@ namespace SolidBrew.Core
             if (!string.IsNullOrWhiteSpace(author)) query.Add(Pair(Query.Author, author!));
             if (includeUnused) query.Add(Pair(Query.IncludeUnused, "true"));
             if (limit.HasValue) query.Add(Pair(Query.Limit, limit.Value.ToString(CultureInfo.InvariantCulture)));
+            if (roots) query.Add(Pair(Query.Roots, "true"));
             return WithQuery(Templates.Documents, query);
         }
 
         public static string Document(Guid id) => $"{Prefix}/documents/{G(id)}";
 
-        public static string Kit(Guid id, int version) => $"{Version(id, version)}/kit";
+        /// <param name="includeDrawings">Добавить последние версии чертежей, ссылающихся на документы комплекта, и их зависимости.</param>
+        public static string Kit(Guid id, int version, bool includeDrawings = false) =>
+            includeDrawings ? $"{Version(id, version)}/kit?{Query.IncludeDrawings}=true" : $"{Version(id, version)}/kit";
 
         public static string WhereUsed(Guid id, int version) => $"{Version(id, version)}/where-used";
 

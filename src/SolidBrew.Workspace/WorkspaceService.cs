@@ -304,6 +304,7 @@ public sealed partial class WorkspaceService
 
             var e = f.Entry;
             fs.DocumentId = e.DocumentId;
+            fs.ProjectFolder = e.ProjectFolder;
             fs.Cad = e.Cad;
             fs.Kind = e.Kind;
             fs.Designation = e.Designation;

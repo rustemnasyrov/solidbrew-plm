@@ -70,6 +70,8 @@ public static class LocalProblemCodes
     public const string PathTaken = "local.pathTaken";
     /// <summary>Ссылки в разложенном документе не переписаны на пути рабочей папки (CAD не запущен, документ открыт в CAD…).</summary>
     public const string ReferencesNotRewritten = "local.referencesNotRewritten";
+    /// <summary>Чертёж, добавленный к комплекту, сдан с другой версией модели, чем в комплекте (для сведения).</summary>
+    public const string DrawingOtherModelVersion = "local.drawingOtherModelVersion";
     public const string Server = "server";
 }
 

@@ -97,9 +97,11 @@ public class PdmApiClientTests
         await client.LockAsync(id);
         await client.UnlockAsync(id);
         await client.GetKitAsync(id, 2);
+        await client.GetKitAsync(id, 2, includeDrawings: true);
         await client.GetWhereUsedAsync(id, 2);
         var doc = await client.MarkUnusedAsync(id, true);
         await client.SearchDocumentsAsync("АИРТ 467", projectId: id, includeUnused: true, limit: 50);
+        await client.SearchDocumentsAsync(roots: true);
         var missing = await client.GetMissingObjectsAsync(new[] { "ab", "cd" });
         var checkin = await client.CheckinAsync(new CheckinRequest());
         await client.UpdateUserAsync(id, new UpdateUserRequest { Active = false });
@@ -115,9 +117,11 @@ public class PdmApiClientTests
             $"POST /api/documents/{g}/lock",
             $"DELETE /api/documents/{g}/lock",
             $"GET /api/documents/{g}/versions/2/kit",
+            $"GET /api/documents/{g}/versions/2/kit?includeDrawings=true",
             $"GET /api/documents/{g}/versions/2/where-used",
             $"POST /api/documents/{g}/unused",
             $"GET /api/documents?q=%D0%90%D0%98%D0%A0%D0%A2%20467&projectId={g}&includeUnused=true&limit=50",
+            "GET /api/documents?roots=true",
             "POST /api/objects/missing",
             "POST /api/checkins",
             $"PUT /api/admin/users/{g}",
@@ -130,8 +134,8 @@ public class PdmApiClientTests
         Assert.Equal(DocumentStatus.Unused, doc.Status);
         Assert.Equal(new[] { "ab" }, missing);
         Assert.Equal(7, checkin.CheckinId);
-        Assert.Contains("\"unused\":true", Encoding.UTF8.GetString(handler.Bodies[4]!));
-        Assert.Equal("{\"active\":false}", Encoding.UTF8.GetString(handler.Bodies[8]!));
+        Assert.Contains("\"unused\":true", Encoding.UTF8.GetString(handler.Bodies[5]!));
+        Assert.Equal("{\"active\":false}", Encoding.UTF8.GetString(handler.Bodies[10]!));
     }
 
     [Fact]

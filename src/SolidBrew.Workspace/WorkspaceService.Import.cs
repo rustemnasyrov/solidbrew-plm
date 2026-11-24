@@ -8,8 +8,9 @@ public sealed partial class WorkspaceService
 {
     /// <summary>
     /// Подготовить постановку на учёт готового проекта: обход ссылок от головного файла, поиск чертежей и прочих документов
-    /// в <paramref name="extraFolders"/> по их ссылкам на комплект. Исходники только читаются: каждый копируется во временную
-    /// папку кэша, хешируется и читается адаптером уже из копии; атрибуты исходников не меняются.
+    /// в папке головного файла (со всеми подпапками, например <c>Чертежи/</c>) и в <paramref name="extraFolders"/> по их ссылкам
+    /// на комплект: попадают только документы, которые ссылаются на документы комплекта. Исходники только читаются: каждый
+    /// копируется во временную папку кэша, хешируется и читается адаптером уже из копии; атрибуты исходников не меняются.
     /// Папки поиска — папка головного файла и <paramref name="extraFolders"/>.
     /// </summary>
     public async Task<ImportReport> PrepareImportAsync(string headFile, IEnumerable<string>? extraFolders = null,
@@ -85,9 +86,9 @@ public sealed partial class WorkspaceService
             var headDoc = await ScanAsync(head, true, false).ConfigureAwait(false);
             await ClosureAsync(headDoc).ConfigureAwait(false);
 
-            // Документы доп. папок: читаем каждый, берём те, что ссылаются на документы комплекта.
-            var extraFiles = extras.SelectMany(f => SafeEnumerate(f)).Where(p => Adapters.FindFor(p) != null && !IsTempName(p))
-                .Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+            // Документы папки головного файла (с подпапками) и доп. папок: читаем каждый, берём те, что ссылаются на документы комплекта.
+            var extraFiles = searchFolders.SelectMany(f => SafeEnumerate(f)).Where(p => Adapters.FindFor(p) != null && !IsTempName(p))
+                .Select(Path.GetFullPath).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
             foreach (var path in extraFiles)
             {
                 if (report.Find(path) != null) continue;

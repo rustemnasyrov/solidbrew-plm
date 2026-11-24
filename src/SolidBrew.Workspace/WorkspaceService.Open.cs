@@ -9,14 +9,21 @@ public sealed partial class WorkspaceService
     /// <summary>
     /// Подготовить открытие версии документа (по умолчанию последней) в рабочую папку.
     /// Папка создаётся при выполнении, если её ещё нет. Ничего не меняет на диске.
+    /// <para>
+    /// <paramref name="includeDrawings"/> — комплект берётся вместе с чертежами его документов (последние версии чертежей,
+    /// ссылающихся на документы комплекта, см. <see cref="KitItemDto.IsAttachedDrawing"/>); чертежи раскладываются по своим путям,
+    /// их ссылки переписываются на модели в рабочей папке, как у остальных документов.
+    /// </para>
+    /// Документы чужого проекта (и библиотеки) раскладываются в подпапку с именем своего проекта
+    /// (<see cref="OpenPlanItem.ProjectFolder"/>).
     /// </summary>
     public async Task<OpenPlan> PrepareOpenAsync(string workRoot, Guid documentId, int? version = null,
-        IProgress<WorkProgress>? progress = null, CancellationToken ct = default)
+        IProgress<WorkProgress>? progress = null, CancellationToken ct = default, bool includeDrawings = false)
     {
         var root = Root(workRoot);
         progress?.Report(new WorkProgress(WorkStage.Preparing, 0, 0, "Получение состава комплекта"));
         var ver = version ?? (await Api.GetDocumentAsync(documentId, ct).ConfigureAwait(false)).Document.LatestVersion;
-        var kit = await Api.GetKitAsync(documentId, ver, ct).ConfigureAwait(false);
+        var kit = await Api.GetKitAsync(documentId, ver, includeDrawings, ct).ConfigureAwait(false);
         return await BuildOpenPlanAsync(root, new List<KitDto> { kit }, isUpdate: false, progress, ct).ConfigureAwait(false);
     }
 
@@ -34,7 +41,7 @@ public sealed partial class WorkspaceService
         {
             progress?.Report(new WorkProgress(WorkStage.Preparing, kits.Count, 0, "Получение последних версий"));
             var latest = (await Api.GetDocumentAsync(id, ct).ConfigureAwait(false)).Document.LatestVersion;
-            kits.Add(await Api.GetKitAsync(id, latest, ct).ConfigureAwait(false));
+            kits.Add(await Api.GetKitAsync(id, latest, ct: ct).ConfigureAwait(false));
         }
         if (kits.Count == 0) throw new WorkspaceException("Не выбраны документы для обновления.");
         return await BuildOpenPlanAsync(root, kits, isUpdate: true, progress, ct).ConfigureAwait(false);
@@ -48,13 +55,17 @@ public sealed partial class WorkspaceService
         var headItem = headKit.Items.FirstOrDefault(i => i.DocumentId == headKit.HeadDocumentId && i.Version == headKit.HeadVersion)
                        ?? throw new WorkspaceException("Сервер вернул комплект без головного документа. Сообщите администратору PDM.");
 
+        var projectId = state?.ProjectId ?? headItem.ProjectId;
+        var folderOf = await ProjectFoldersAsync(projectId, kits.SelectMany(k => k.Items).Select(i => i.ProjectId), ct).ConfigureAwait(false);
+        string LocalOf(KitItemDto it) => LocalRelPath(folderOf(it.ProjectId), it.RelPath);
+
         var plan = new OpenPlan
         {
             WorkRoot = root,
-            ProjectId = state?.ProjectId ?? headItem.ProjectId,
+            ProjectId = projectId,
             HeadDocumentId = headItem.DocumentId,
             HeadVersion = headItem.Version,
-            HeadRelPath = headItem.RelPath,
+            HeadRelPath = LocalOf(headItem),
             HeadCad = headItem.Cad,
             IsUpdate = isUpdate,
             CreatesWorkspace = state == null,
@@ -97,18 +108,21 @@ public sealed partial class WorkspaceService
             }
         }
 
-        var byPath = items.Values.GroupBy(i => RelPath.Key(i.RelPath)).Where(g => g.Count() > 1);
+        var byPath = items.Values.GroupBy(i => RelPath.Key(LocalOf(i))).Where(g => g.Count() > 1);
         foreach (var g in byPath)
         {
             plan.Problems.Add(new PlanProblem(ProblemSeverity.Error, LocalProblemCodes.VersionConflict,
-                $"Разные документы комплекта лежат по одному пути «{g.First().RelPath}». Открыть такой комплект нельзя — сообщите администратору PDM."));
+                $"Разные документы комплекта лежат по одному пути «{LocalOf(g.First())}». Открыть такой комплект нельзя — сообщите администратору PDM."));
         }
 
         var scan = state != null ? await ScanAsync(root, state, hashDrafts: false, progress, ct).ConfigureAwait(false) : null;
 
-        foreach (var it in items.Values.OrderBy(i => i.RelPath, StringComparer.OrdinalIgnoreCase))
+        foreach (var source in items.Values.OrderBy(i => LocalOf(i), StringComparer.OrdinalIgnoreCase))
         {
             ct.ThrowIfCancellationRequested();
+            // Дальше it.RelPath — путь в рабочей папке (с подпапкой проекта для документов чужого проекта).
+            var folder = folderOf(source.ProjectId);
+            var it = folder == null ? source : WithRelPath(source, LocalRelPath(folder, source.RelPath));
             var full = RelPath.Combine(root, it.RelPath);
             var item = new OpenPlanItem
             {
@@ -116,6 +130,10 @@ public sealed partial class WorkspaceService
                 Version = it.Version,
                 LatestVersion = it.LatestVersion,
                 RelPath = it.RelPath,
+                DocumentRelPath = source.RelPath,
+                ProjectFolder = folder,
+                ProjectId = source.ProjectId,
+                IsAttachedDrawing = source.IsAttachedDrawing,
                 FullPath = full,
                 Sha256 = it.Sha256,
                 Size = it.Size,
@@ -268,6 +286,14 @@ public sealed partial class WorkspaceService
             plan.Items.Add(item);
         }
 
+        var mismatched = new HashSet<Guid>(kits.SelectMany(k => k.Items).Where(k => k.DrawingModelVersionMismatch).Select(k => k.DocumentId));
+        foreach (var it in plan.Items.Where(i => mismatched.Contains(i.DocumentId)))
+        {
+            plan.Problems.Add(new PlanProblem(ProblemSeverity.Info, LocalProblemCodes.DrawingOtherModelVersion,
+                $"Чертёж {Texts.Doc(it.RelPath, it.Designation)} v{it.Version} сдан с другой версией модели, чем в открываемом комплекте; он откроется с моделью из рабочей папки.",
+                it.RelPath, it.DocumentId));
+        }
+
         var working = await GetWorkingCadVersionsAsync(ct).ConfigureAwait(false);
         foreach (var it in plan.Items)
         {
@@ -280,6 +306,27 @@ public sealed partial class WorkspaceService
         }
         return plan;
     }
+
+    private static KitItemDto WithRelPath(KitItemDto it, string relPath) => new()
+    {
+        DocumentId = it.DocumentId,
+        Version = it.Version,
+        LatestVersion = it.LatestVersion,
+        RelPath = relPath,
+        Sha256 = it.Sha256,
+        Size = it.Size,
+        Cad = it.Cad,
+        Kind = it.Kind,
+        CadVersion = it.CadVersion,
+        CadVersionMajor = it.CadVersionMajor,
+        Designation = it.Designation,
+        Name = it.Name,
+        Status = it.Status,
+        Lock = it.Lock,
+        ProjectId = it.ProjectId,
+        IsAttachedDrawing = it.IsAttachedDrawing,
+        DrawingModelVersionMismatch = it.DrawingModelVersionMismatch,
+    };
 
     /// <summary>
     /// Выполнить открытие: докачать недостающее в кэш, разложить файлы (молча ничего не перезаписывается —
@@ -371,6 +418,7 @@ public sealed partial class WorkspaceService
             var entry = new WorkspaceEntry
             {
                 RelPath = item.RelPath,
+                ProjectFolder = item.ProjectFolder,
                 DocumentId = item.DocumentId,
                 Version = item.Version,
                 Sha256 = item.Sha256,

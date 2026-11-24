@@ -32,6 +32,8 @@ public sealed class FileStatus
     public string FullPath { get; set; } = string.Empty;
     public string FileName => Texts.FileNameOf(RelPath);
     public Guid? DocumentId { get; set; }
+    /// <summary>Подпапка проекта документа чужого проекта (см. <see cref="WorkspaceEntry.ProjectFolder"/>); null — документ проекта рабочей папки или черновик.</summary>
+    public string? ProjectFolder { get; set; }
     public string Cad { get; set; } = string.Empty;
     public DocumentKind Kind { get; set; }
     public string? Designation { get; set; }

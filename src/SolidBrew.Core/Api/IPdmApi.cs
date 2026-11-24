@@ -42,15 +42,22 @@ namespace SolidBrew.Core.Api
 
         // --- Документы ---
 
-        /// <summary>GET /api/documents?q=&amp;projectId=&amp;author=&amp;includeUnused=&amp;limit=.</summary>
+        /// <summary>
+        /// GET /api/documents?q=&amp;projectId=&amp;author=&amp;includeUnused=&amp;limit=&amp;roots=.
+        /// <paramref name="roots"/> — только корневые изделия (активные сборки, не входящие в последние версии других документов, кроме чертежей).
+        /// </summary>
         Task<List<DocumentSummaryDto>> SearchDocumentsAsync(string? q = null, Guid? projectId = null, string? author = null,
-            bool includeUnused = false, int? limit = null, CancellationToken ct = default);
+            bool includeUnused = false, int? limit = null, bool roots = false, CancellationToken ct = default);
 
         /// <summary>GET /api/documents/{id}.</summary>
         Task<DocumentDetailDto> GetDocumentAsync(Guid id, CancellationToken ct = default);
 
-        /// <summary>GET /api/documents/{id}/versions/{version}/kit.</summary>
-        Task<KitDto> GetKitAsync(Guid id, int version, CancellationToken ct = default);
+        /// <summary>
+        /// GET /api/documents/{id}/versions/{version}/kit?includeDrawings=.
+        /// <paramref name="includeDrawings"/> — добавить последние версии чертежей, ссылающихся на документы комплекта
+        /// (<see cref="KitItemDto.IsAttachedDrawing"/>), и их недостающие зависимости.
+        /// </summary>
+        Task<KitDto> GetKitAsync(Guid id, int version, bool includeDrawings = false, CancellationToken ct = default);
 
         /// <summary>GET /api/documents/{id}/versions/{version}/where-used.</summary>
         Task<WhereUsedDto> GetWhereUsedAsync(Guid id, int version, CancellationToken ct = default);

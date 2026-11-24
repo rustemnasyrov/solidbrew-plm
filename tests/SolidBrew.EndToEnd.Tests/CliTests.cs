@@ -198,6 +198,48 @@ public sealed class CliTests(ServerFixture fx) : IDisposable
     }
 
     [Fact]
+    public async Task Cli_Products_OpenWithDrawings_TreeShowsDrawingsUnderModels()
+    {
+        var user = await fx.NewUserAsync("cli");
+        var project = await fx.NewProjectAsync();
+        var kit = SourceKit.Create(_dir.Path("Сеть"));
+        var sh = new Shell(fx, _dir, "pc4");
+        await sh.SetupAsync(user.Login, ServerFixture.UserPassword);
+        var imported = await sh.RunAsync("import", kit.HeadFile, "--project", project.Name, "--extra", kit.DrawingsFolder, "--yes");
+        AssertCode(CliApp.Ok, imported);
+        var head = HeadId(imported);
+
+        var roots = await sh.RunAsync("products", "--project", project.Name);
+        AssertCode(CliApp.Ok, roots);
+        Assert.Contains(SourceKit.HeadDesignation, roots.Out);
+        Assert.DoesNotContain("АБВ.100", roots.Out); // подсборка входит в изделие — не корень
+        var all = await sh.RunAsync("products", "--project", project.Name, "--all", "--json");
+        AssertCode(CliApp.Ok, all);
+        var assemblies = JsonDocument.Parse(all.Out).RootElement.EnumerateArray().ToList();
+        Assert.Equal(2, assemblies.Count);
+        Assert.Equal(1, assemblies.Single(a => a.GetProperty("designation").GetString() == "АБВ.100").GetProperty("usedInCount").GetInt32());
+
+        var ws = _dir.Path("pc4", "Работа");
+        var open = await sh.RunAsync("open", head, "--to", ws, "--with-drawings", "--verify");
+        AssertCode(CliApp.Ok, open);
+        Assert.Contains("Документов в комплекте: 8", open.Out);
+        Assert.True(File.Exists(Path.Combine(ws, "Чертежи", "Корпус.tcdrw")));
+
+        sh.Cwd = ws;
+        var tree = await sh.RunAsync("tree");
+        AssertCode(CliApp.Ok, tree);
+        Assert.Contains("[чертёж] Чертежи/Корпус.tcdrw v1", tree.Out);
+        Assert.Contains("    [чертёж] Чертежи/Узел.tcdrw v1", tree.Out); // под подсборкой
+        var plain = await sh.RunAsync("tree", "--no-drawings");
+        AssertCode(CliApp.Ok, plain);
+        Assert.DoesNotContain("[чертёж]", plain.Out);
+
+        var status = await sh.RunAsync("status", "--json");
+        AssertCode(CliApp.Ok, status);
+        Assert.Equal(8, JsonDocument.Parse(status.Out).RootElement.GetProperty("files").GetArrayLength());
+    }
+
+    [Fact]
     public async Task Cli_Admin_LocksAndSettings_ErrorsAndExitCodes()
     {
         var admin = new Shell(fx, _dir, "admin");

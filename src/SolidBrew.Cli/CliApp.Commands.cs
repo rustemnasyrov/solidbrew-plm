@@ -20,6 +20,9 @@ public sealed partial class CliApp
         yield return new("search", "search [текст] [--author <автор>] [--project <проект>] [--all] [--limit n]",
             "Поиск по обозначению, наименованию, имени файла и автору. --all — включая «не используется».",
             new[] { "all" }, new[] { "author", "project", "limit" }, SearchAsync);
+        yield return new("products", "products [текст] [--all] [--project <проект>] [--limit n]",
+            "Изделия: корневые сборки — не входящие в последние версии других документов, кроме чертежей. --all — все сборки (с числом применений). * — закреплённые.",
+            new[] { "all" }, new[] { "project", "limit" }, ProductsAsync);
         yield return new("show", "show <документ> [--version n]",
             "Карточка документа: свойства, версии, ссылки, производные файлы, блокировка, журнал.",
             none, new[] { "version" }, ShowAsync);
@@ -30,16 +33,18 @@ public sealed partial class CliApp
             "Поставить на учёт готовый проект: исходники только читаются. Без --yes печатает отчёт по ссылкам и выходит с кодом 2.",
             new[] { "accept-name-matches", "accept-outside", "allow-missing", "accept-newer-cad", "yes" },
             new[] { "extra", "project", "choose", "comment" }, ImportAsync);
-        yield return new("open", "open <документ> [--version n] [--to <папка>] [--replace-all|--keep-all] [--verify] [--yes]",
-            "Открыть версию (по умолчанию последнюю): докачать в кэш и разложить комплект в рабочую папку. При конфликтах без --yes печатает план и выходит с кодом 2.",
-            new[] { "replace-all", "keep-all", "verify", "yes" }, new[] { "version", "to" }, OpenAsync);
+        yield return new("open", "open <документ> [--version n] [--to <папка>] [--with-drawings] [--replace-all|--keep-all] [--verify] [--yes]",
+            "Открыть версию (по умолчанию последнюю): докачать в кэш и разложить комплект в рабочую папку. --with-drawings — вместе с чертежами документов комплекта. " +
+            "Документы другого проекта кладутся в подпапку с именем проекта. При конфликтах без --yes печатает план и выходит с кодом 2.",
+            new[] { "replace-all", "keep-all", "verify", "yes", "with-drawings" }, new[] { "version", "to" }, OpenAsync);
         yield return new("update", "update <файл>... [--replace-all|--keep-all] [--yes]",
             "Обновить документы рабочей папки до последней версии (вместе с их комплектами).",
             new[] { "replace-all", "keep-all", "yes" }, none, UpdateAsync);
         yield return new("status", "status [--offline]", "Состояние рабочей папки: изменения, черновики, блокировки, новые версии.",
             new[] { "offline" }, none, StatusAsync);
-        yield return new("tree", "tree [<документ>] [--version n]", "Дерево комплекта с состояниями (по умолчанию — открытый в папке).",
-            none, new[] { "version" }, TreeAsync);
+        yield return new("tree", "tree [<документ>] [--version n] [--no-drawings]",
+            "Дерево комплекта с состояниями (по умолчанию — открытый в папке). Чертежи показываются под моделями; --no-drawings — без чертежей.",
+            new[] { "no-drawings" }, new[] { "version" }, TreeAsync);
         yield return new("checkout", "checkout <файл>...", "Взять в работу: блокировка на сервере, файл становится доступным для записи.",
             none, none, CheckOutAsync);
         yield return new("undo", "undo <файл>... [--revert] [--yes]",

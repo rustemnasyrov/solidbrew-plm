@@ -12,10 +12,29 @@ internal static class KitQueries
         connection.ExecuteScalarAsync<bool>(
             "SELECT EXISTS (SELECT 1 FROM versions WHERE document_id = @id AND number = @version)", new { id, version });
 
-    /// <summary>Комплект версии. Элементы уникальны по (документ, версия); головной — первый.</summary>
-    public static async Task<(KitDto Kit, List<long> VersionIds)> GetKitAsync(IDbConnection connection, Guid id, int version)
+    private const string ItemColumns = """
+        SELECT v.id AS version_id, v.document_id, v.number AS version, lv.latest AS latest_version, v.rel_path, v.sha256, v.size,
+               d.cad, d.kind, v.cad_version, v.cad_version_major, v.designation, v.name, d.status, d.project_id, v.at,
+               l.user_id AS lock_user_id, lu.login AS lock_login, lu.display_name AS lock_display_name, l.at AS lock_at
+        """;
+
+    private const string ItemJoins = """
+            JOIN documents d ON d.id = v.document_id
+            JOIN LATERAL (SELECT max(x.number) AS latest FROM versions x WHERE x.document_id = d.id) lv ON true
+            LEFT JOIN locks l ON l.document_id = d.id
+            LEFT JOIN users lu ON lu.id = l.user_id
+        """;
+
+    /// <summary>
+    /// Комплект версии. Элементы уникальны по (документ, версия); головной — первый.
+    /// <paramref name="includeDrawings"/> — добавить последние версии активных чертежей, ссылающихся на любую версию любого
+    /// документа комплекта, и замыкание их зависимостей по документам, которых в комплекте нет (документ, уже входящий
+    /// в комплект, второй раз в другой версии не добавляется). Добавленные элементы — после элементов комплекта,
+    /// с <see cref="KitItemDto.IsAttachedDrawing"/>.
+    /// </summary>
+    public static async Task<(KitDto Kit, List<long> VersionIds)> GetKitAsync(IDbConnection connection, Guid id, int version, bool includeDrawings = false)
     {
-        var items = (await connection.QueryAsync<KitRow>("""
+        var items = (await connection.QueryAsync<KitRow>($"""
             WITH RECURSIVE kit(document_id, number) AS (
                 SELECT CAST(@id AS uuid), CAST(@version AS integer)
               UNION
@@ -25,19 +44,30 @@ internal static class KitQueries
                 JOIN version_refs r ON r.version_id = v.id
                 WHERE r.child_document_id IS NOT NULL
             )
-            SELECT v.id AS version_id, v.document_id, v.number AS version, lv.latest AS latest_version, v.rel_path, v.sha256, v.size,
-                   d.cad, d.kind, v.cad_version, v.cad_version_major, v.designation, v.name, d.status, d.project_id, v.at,
-                   l.user_id AS lock_user_id, lu.login AS lock_login, lu.display_name AS lock_display_name, l.at AS lock_at
+            {ItemColumns}
             FROM kit k
             JOIN versions v ON v.document_id = k.document_id AND v.number = k.number
-            JOIN documents d ON d.id = v.document_id
-            JOIN LATERAL (SELECT max(x.number) AS latest FROM versions x WHERE x.document_id = d.id) lv ON true
-            LEFT JOIN locks l ON l.document_id = d.id
-            LEFT JOIN users lu ON lu.id = l.user_id
+            {ItemJoins}
             ORDER BY (v.document_id = @id AND v.number = @version) DESC, lower(v.rel_path), v.number
             """, new { id, version })).ToList();
 
-        var versionIds = items.Select(i => i.VersionId).ToArray();
+        var attached = new List<KitRow>();
+        if (includeDrawings)
+        {
+            var addedIds = await AttachedVersionIdsAsync(connection, items);
+            if (addedIds.Count > 0)
+            {
+                attached = (await connection.QueryAsync<KitRow>($"""
+                    {ItemColumns}
+                    FROM versions v
+                    {ItemJoins}
+                    WHERE v.id = ANY(@addedIds)
+                    ORDER BY (d.kind = 'drawing') DESC, lower(v.rel_path), v.number
+                    """, new { addedIds = addedIds.ToArray() })).ToList();
+            }
+        }
+
+        var versionIds = items.Concat(attached).Select(i => i.VersionId).ToArray();
         var refs = await connection.QueryAsync<EdgeRow>("""
             SELECT pv.document_id AS parent_document_id, pv.number AS parent_version, r.child_document_id, r.child_version, r.ref_path
             FROM version_refs r JOIN versions pv ON pv.id = r.version_id
@@ -46,26 +76,7 @@ internal static class KitQueries
             """, new { versionIds });
 
         var kit = new KitDto { HeadDocumentId = id, HeadVersion = version };
-        kit.Items = items.Select(i => new KitItemDto
-        {
-            DocumentId = i.DocumentId,
-            Version = i.Version,
-            LatestVersion = i.LatestVersion,
-            RelPath = i.RelPath,
-            Sha256 = i.Sha256,
-            Size = i.Size,
-            Cad = i.Cad,
-            Kind = DbText.Kind(i.Kind),
-            CadVersion = i.CadVersion,
-            CadVersionMajor = i.CadVersionMajor,
-            Designation = i.Designation,
-            Name = i.Name,
-            Status = DbText.Status(i.Status),
-            ProjectId = i.ProjectId,
-            Lock = i.LockUserId is { } userId
-                ? new LockDto { DocumentId = i.DocumentId, UserId = userId, UserLogin = i.LockLogin ?? "", UserDisplayName = i.LockDisplayName ?? "", At = DbText.Time(i.LockAt!.Value) }
-                : null,
-        }).ToList();
+        kit.Items = items.Select(i => ToDto(i, false)).Concat(attached.Select(i => ToDto(i, true))).ToList();
         foreach (var r in refs)
         {
             if (r.ChildDocumentId is { } childId && r.ChildVersion is { } childVersion)
@@ -73,8 +84,87 @@ internal static class KitQueries
             else
                 kit.Unresolved.Add(new KitUnresolvedRefDto { ParentDocumentId = r.ParentDocumentId, ParentVersion = r.ParentVersion, RefPath = r.RefPath });
         }
-        return (kit, items.Select(i => i.VersionId).ToList());
+
+        // Чертёж сдан с другой версией модели, чем в комплекте.
+        if (attached.Count > 0)
+        {
+            var kitVersions = items.GroupBy(i => i.DocumentId).ToDictionary(g => g.Key, g => g.Select(i => i.Version).ToHashSet());
+            foreach (var item in kit.Items.Where(i => i.IsAttachedDrawing && i.Kind == DocumentKind.Drawing))
+            {
+                item.DrawingModelVersionMismatch = kit.Edges.Any(e =>
+                    e.ParentDocumentId == item.DocumentId && e.ParentVersion == item.Version &&
+                    kitVersions.TryGetValue(e.ChildDocumentId, out var versions) && !versions.Contains(e.ChildVersion));
+            }
+        }
+        return (kit, versionIds.ToList());
     }
+
+    /// <summary>
+    /// Версии, добавляемые к комплекту с чертежами: последние версии активных чертежей, ссылающихся на документы комплекта,
+    /// и (замыканием) их зависимости по документам, которых в комплекте ещё нет.
+    /// </summary>
+    private static async Task<List<long>> AttachedVersionIdsAsync(IDbConnection connection, List<KitRow> items)
+    {
+        var present = new HashSet<Guid>(items.Select(i => i.DocumentId));
+        var docIds = present.ToArray();
+        var drawings = (await connection.QueryAsync<(long VersionId, Guid DocumentId)>("""
+            SELECT lv.id, d.id
+            FROM documents d
+            JOIN LATERAL (SELECT x.id FROM versions x WHERE x.document_id = d.id ORDER BY x.number DESC LIMIT 1) lv ON true
+            WHERE d.kind = 'drawing' AND d.status = 'active' AND NOT (d.id = ANY(@docIds))
+              AND EXISTS (SELECT 1 FROM version_refs r WHERE r.version_id = lv.id AND r.child_document_id = ANY(@docIds))
+            ORDER BY lower(d.current_rel_path), d.id
+            """, new { docIds })).ToList();
+
+        var added = new List<long>();
+        var frontier = new List<long>();
+        foreach (var (versionId, documentId) in drawings)
+        {
+            if (!present.Add(documentId)) continue;
+            added.Add(versionId);
+            frontier.Add(versionId);
+        }
+        while (frontier.Count > 0)
+        {
+            var children = await connection.QueryAsync<(Guid ChildDocumentId, long ChildVersionId)>("""
+                SELECT r.child_document_id, cv.id
+                FROM version_refs r
+                JOIN versions cv ON cv.document_id = r.child_document_id AND cv.number = r.child_version
+                WHERE r.version_id = ANY(@frontier)
+                ORDER BY r.id
+                """, new { frontier = frontier.ToArray() });
+            frontier = new List<long>();
+            foreach (var (childId, childVersionId) in children)
+            {
+                if (!present.Add(childId)) continue;
+                added.Add(childVersionId);
+                frontier.Add(childVersionId);
+            }
+        }
+        return added;
+    }
+
+    private static KitItemDto ToDto(KitRow i, bool attached) => new()
+    {
+        DocumentId = i.DocumentId,
+        Version = i.Version,
+        LatestVersion = i.LatestVersion,
+        RelPath = i.RelPath,
+        Sha256 = i.Sha256,
+        Size = i.Size,
+        Cad = i.Cad,
+        Kind = DbText.Kind(i.Kind),
+        CadVersion = i.CadVersion,
+        CadVersionMajor = i.CadVersionMajor,
+        Designation = i.Designation,
+        Name = i.Name,
+        Status = DbText.Status(i.Status),
+        ProjectId = i.ProjectId,
+        Lock = i.LockUserId is { } userId
+            ? new LockDto { DocumentId = i.DocumentId, UserId = userId, UserLogin = i.LockLogin ?? "", UserDisplayName = i.LockDisplayName ?? "", At = DbText.Time(i.LockAt!.Value) }
+            : null,
+        IsAttachedDrawing = attached,
+    };
 
     /// <summary>Применения всех версий документа.</summary>
     public static async Task<WhereUsedDto> GetWhereUsedAsync(IDbConnection connection, Guid id)

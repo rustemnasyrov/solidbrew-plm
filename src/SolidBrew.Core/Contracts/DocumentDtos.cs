@@ -34,6 +34,11 @@ namespace SolidBrew.Core.Contracts
         public string LatestAuthorDisplayName { get; set; } = string.Empty;
         public DateTimeOffset LatestAt { get; set; }
         public LockDto? Lock { get; set; }
+        /// <summary>
+        /// Сколько активных документов (кроме чертежей) ссылаются последней версией на какую-либо версию этого документа.
+        /// 0 у сборки — корневое изделие.
+        /// </summary>
+        public int UsedInCount { get; set; }
     }
 
     /// <summary>Опубликованная версия документа.</summary>

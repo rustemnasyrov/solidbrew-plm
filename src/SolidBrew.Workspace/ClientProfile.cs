@@ -9,7 +9,8 @@ using SolidBrew.Core.Json;
 namespace SolidBrew.Workspace;
 
 /// <summary>
-/// Профиль клиента на компьютере конструктора: адрес сервера, сохранённый вход, недавние рабочие папки.
+/// Профиль клиента на компьютере конструктора: адрес сервера, сохранённый вход, недавние рабочие папки,
+/// закреплённые и недавние изделия.
 /// Общий для WPF-клиента и CLI. Токен хранится зашифрованным DPAPI (только текущий пользователь Windows).
 /// </summary>
 public sealed class ClientProfile
@@ -35,6 +36,15 @@ public sealed class ClientProfile
 
     public bool HasValidToken => !string.IsNullOrEmpty(Token) && (TokenExpiresAt is null || TokenExpiresAt > DateTimeOffset.UtcNow);
 
+    /// <summary>Изделия, закреплённые пользователем в переключателе изделий.</summary>
+    public List<PinnedProduct> PinnedProducts { get; set; } = new();
+
+    /// <summary>Недавно открытые изделия (новые первыми): документ, рабочая папка, время.</summary>
+    public List<RecentProduct> RecentProducts { get; set; } = new();
+
+    /// <summary>Сколько недавних изделий хранится.</summary>
+    public const int MaxRecentProducts = 20;
+
     public void RememberWorkspace(string path)
     {
         var full = Path.GetFullPath(path);
@@ -43,6 +53,76 @@ public sealed class ClientProfile
         RecentWorkspaces.Insert(0, full);
         if (RecentWorkspaces.Count > 10) RecentWorkspaces.RemoveRange(10, RecentWorkspaces.Count - 10);
     }
+
+    /// <summary>Изделие закреплено.</summary>
+    public bool IsPinned(Guid documentId) => PinnedProducts.Any(p => p.DocumentId == documentId);
+
+    /// <summary>Закрепить изделие (повторно — обновить обозначение и наименование, место в списке сохраняется).</summary>
+    public void Pin(Guid documentId, string? designation, string? name)
+    {
+        var existing = PinnedProducts.FirstOrDefault(p => p.DocumentId == documentId);
+        if (existing != null)
+        {
+            existing.Designation = designation;
+            existing.Name = name;
+            return;
+        }
+        PinnedProducts.Add(new PinnedProduct { DocumentId = documentId, Designation = designation, Name = name });
+    }
+
+    /// <summary>Открепить изделие. false — не было закреплено.</summary>
+    public bool Unpin(Guid documentId) => PinnedProducts.RemoveAll(p => p.DocumentId == documentId) > 0;
+
+    /// <summary>
+    /// Запомнить открытое изделие: пара (документ, рабочая папка) поднимается в начало списка недавних с текущим временем;
+    /// рабочая папка запоминается и в <see cref="RecentWorkspaces"/>. Хранится не больше <see cref="MaxRecentProducts"/>.
+    /// </summary>
+    public RecentProduct RememberProduct(Guid documentId, string workRoot, string? designation = null, string? name = null, DateTimeOffset? at = null)
+    {
+        var full = Path.GetFullPath(workRoot).TrimEnd('\\', '/');
+        var old = RecentProducts.FirstOrDefault(p => p.DocumentId == documentId && string.Equals(p.WorkRoot, full, StringComparison.OrdinalIgnoreCase));
+        RecentProducts.RemoveAll(p => p.DocumentId == documentId && string.Equals(p.WorkRoot, full, StringComparison.OrdinalIgnoreCase));
+        var item = new RecentProduct
+        {
+            DocumentId = documentId,
+            WorkRoot = full,
+            Designation = designation ?? old?.Designation,
+            Name = name ?? old?.Name,
+            At = at ?? DateTimeOffset.Now,
+        };
+        RecentProducts.Insert(0, item);
+        if (RecentProducts.Count > MaxRecentProducts) RecentProducts.RemoveRange(MaxRecentProducts, RecentProducts.Count - MaxRecentProducts);
+        foreach (var p in PinnedProducts.Where(p => p.DocumentId == documentId))
+        {
+            if (designation != null) p.Designation = designation;
+            if (name != null) p.Name = name;
+        }
+        RememberWorkspace(full);
+        return item;
+    }
+
+    /// <summary>Забыть недавнее изделие (все рабочие папки, или одну — <paramref name="workRoot"/>).</summary>
+    public bool ForgetProduct(Guid documentId, string? workRoot = null) =>
+        RecentProducts.RemoveAll(p => p.DocumentId == documentId &&
+            (workRoot == null || string.Equals(p.WorkRoot, Path.GetFullPath(workRoot).TrimEnd('\\', '/'), StringComparison.OrdinalIgnoreCase))) > 0;
+}
+
+/// <summary>Закреплённое изделие (головная сборка, открываемая как корень окна).</summary>
+public sealed class PinnedProduct
+{
+    public Guid DocumentId { get; set; }
+    public string? Designation { get; set; }
+    public string? Name { get; set; }
+}
+
+/// <summary>Недавно открытое изделие: документ, рабочая папка и время открытия.</summary>
+public sealed class RecentProduct
+{
+    public Guid DocumentId { get; set; }
+    public string? Designation { get; set; }
+    public string? Name { get; set; }
+    public string WorkRoot { get; set; } = string.Empty;
+    public DateTimeOffset At { get; set; }
 }
 
 public static class ClientProfileStore

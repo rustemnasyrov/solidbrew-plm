@@ -13,7 +13,8 @@ internal static class DocumentQueries
         SELECT d.id, d.project_id, p.name AS project_name, p.kind AS project_kind, d.cad, d.kind, d.status,
                d.current_rel_path AS rel_path, lv.number AS latest_version, lv.designation, lv.name,
                au.login AS latest_author_login, au.display_name AS latest_author_display_name, lv.at AS latest_at,
-               l.user_id AS lock_user_id, lu.login AS lock_login, lu.display_name AS lock_display_name, l.at AS lock_at
+               l.user_id AS lock_user_id, lu.login AS lock_login, lu.display_name AS lock_display_name, l.at AS lock_at,
+               ui.used_in_count
         FROM documents d
         JOIN projects p ON p.id = d.project_id
         JOIN LATERAL (
@@ -23,6 +24,15 @@ internal static class DocumentQueries
         JOIN users au ON au.id = lv.author_id
         LEFT JOIN locks l ON l.document_id = d.id
         LEFT JOIN users lu ON lu.id = l.user_id
+        JOIN LATERAL (
+            -- Сколько активных документов (кроме чертежей) ссылаются последней версией на какую-либо версию этого.
+            SELECT CAST(count(DISTINCT pv.document_id) AS integer) AS used_in_count
+            FROM version_refs r
+            JOIN versions pv ON pv.id = r.version_id
+            JOIN documents pd ON pd.id = pv.document_id
+            WHERE r.child_document_id = d.id AND pd.id <> d.id AND pd.status = 'active' AND pd.kind <> 'drawing'
+              AND pv.number = (SELECT max(x.number) FROM versions x WHERE x.document_id = pd.id)
+        ) ui ON true
         """;
 
     public static async Task<DocumentSummaryDto?> GetSummaryAsync(IDbConnection connection, Guid id, IDbTransaction? tx = null)
@@ -31,8 +41,9 @@ internal static class DocumentQueries
         return row?.ToDto();
     }
 
+    /// <param name="roots">Только корневые изделия: активные сборки, на которые не ссылается последняя версия другого активного документа (кроме чертежей).</param>
     public static async Task<List<DocumentSummaryDto>> SearchAsync(IDbConnection connection, string? q, Guid? projectId, string? author,
-        bool includeUnused, int limit)
+        bool includeUnused, int limit, bool roots = false)
     {
         var pattern = string.IsNullOrWhiteSpace(q) ? null : "%" + EscapeLike(q.Trim()) + "%";
         var authorText = string.IsNullOrWhiteSpace(author) ? null : author.Trim();
@@ -40,6 +51,7 @@ internal static class DocumentQueries
         var rows = await connection.QueryAsync<SummaryRow>(SummarySelect + """
 
             WHERE (@includeUnused OR d.status = 'active')
+              AND (NOT @roots OR (d.kind = 'assembly' AND d.status = 'active' AND ui.used_in_count = 0))
               AND (CAST(@projectId AS uuid) IS NULL OR d.project_id = @projectId)
               AND (CAST(@pattern AS text) IS NULL
                    OR lv.designation ILIKE @pattern OR lv.name ILIKE @pattern OR d.current_rel_path ILIKE @pattern)
@@ -49,7 +61,7 @@ internal static class DocumentQueries
                      AND (lower(au2.login) = lower(@authorText) OR au2.display_name ILIKE @authorPattern)))
             ORDER BY lower(d.current_rel_path), d.id
             LIMIT @limit
-            """, new { includeUnused, projectId, pattern, authorText, authorPattern, limit });
+            """, new { includeUnused, roots, projectId, pattern, authorText, authorPattern, limit });
         return rows.Select(r => r.ToDto()).ToList();
     }
 
@@ -152,6 +164,7 @@ internal static class DocumentQueries
         public string? LockLogin { get; set; }
         public string? LockDisplayName { get; set; }
         public DateTime? LockAt { get; set; }
+        public int UsedInCount { get; set; }
 
         public DocumentSummaryDto ToDto() => new()
         {
@@ -173,6 +186,7 @@ internal static class DocumentQueries
             Lock = LockUserId is { } userId
                 ? new LockDto { DocumentId = Id, UserId = userId, UserLogin = LockLogin ?? "", UserDisplayName = LockDisplayName ?? "", At = DbText.Time(LockAt!.Value) }
                 : null,
+            UsedInCount = UsedInCount,
         };
     }
 

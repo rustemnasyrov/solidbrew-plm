@@ -9,7 +9,12 @@ namespace SolidBrew.Workspace;
 public sealed class RenameParent
 {
     public Guid DocumentId { get; init; }
+    /// <summary>Путь в рабочей папке (для документа чужого проекта — с подпапкой проекта).</summary>
     public string RelPath { get; init; } = string.Empty;
+    /// <summary>Собственный путь документа в хранилище.</summary>
+    public string DocumentRelPath { get; init; } = string.Empty;
+    /// <summary>Подпапка проекта документа чужого проекта; null — документ проекта рабочей папки.</summary>
+    public string? ProjectFolder { get; init; }
     public string? Designation { get; init; }
     public string? Name { get; init; }
     public int LatestVersion { get; init; }
@@ -28,8 +33,12 @@ public sealed class RenamePlan
 {
     public string WorkRoot { get; init; } = string.Empty;
     public Guid DocumentId { get; init; }
+    /// <summary>Текущий путь в рабочей папке.</summary>
     public string OldRelPath { get; init; } = string.Empty;
+    /// <summary>Новый путь в рабочей папке (для документа чужого проекта — в той же подпапке проекта).</summary>
     public string NewRelPath { get; init; } = string.Empty;
+    /// <summary>Новый собственный путь документа в хранилище (<see cref="NewRelPath"/> без подпапки проекта).</summary>
+    public string NewDocumentRelPath { get; init; } = string.Empty;
     public int LatestVersion { get; init; }
     public bool LockedByMe { get; init; }
     public string? Designation { get; init; }
@@ -69,6 +78,8 @@ public sealed partial class WorkspaceService
     /// <summary>
     /// Подготовить переименование/перемещение документа рабочей папки: какие последние версии документов ссылаются на него
     /// и кто их держит. Если хоть один занят другим — план невыполним.
+    /// <paramref name="relPath"/> и <paramref name="newRelPath"/> — пути в рабочей папке; у документа чужого проекта новый путь
+    /// без подпапки проекта считается путём внутри этой подпапки (проект документа не меняется).
     /// </summary>
     public async Task<RenamePlan> PrepareRenameAsync(string workRoot, string relPath, string newRelPath, CancellationToken ct = default)
     {
@@ -78,6 +89,9 @@ public sealed partial class WorkspaceService
         var entry = state.FindByPath(relPath) ?? throw new WorkspaceException(
             $"«{relPath}» не учтён в рабочей папке. Черновик (ещё не сданный файл) переименуйте в CAD или проводнике.");
         if (!RelPath.TryNormalize(newRelPath, out var newRel, out var err)) throw new WorkspaceException(err);
+        if (entry.ProjectFolder != null && StripProjectFolder(entry.ProjectFolder, newRel) == newRel)
+            newRel = LocalRelPath(entry.ProjectFolder, newRel);
+        var newDocRel = StripProjectFolder(entry.ProjectFolder, newRel);
 
         var detail = await Api.GetDocumentAsync(entry.DocumentId, ct).ConfigureAwait(false);
         var latest = detail.Versions.FirstOrDefault(v => v.Number == detail.Document.LatestVersion) ?? detail.Versions.First();
@@ -88,6 +102,7 @@ public sealed partial class WorkspaceService
             DocumentId = entry.DocumentId,
             OldRelPath = entry.RelPath,
             NewRelPath = newRel,
+            NewDocumentRelPath = newDocRel,
             LatestVersion = detail.Document.LatestVersion,
             LockedByMe = detail.Document.Lock?.UserId == me.Id,
             Designation = entry.Designation,
@@ -109,16 +124,23 @@ public sealed partial class WorkspaceService
             plan.Problems.Add(new PlanProblem(ProblemSeverity.Error, LocalProblemCodes.LocalChanges,
                 $"В {label} есть несданные правки. Сначала сдайте их или отмените, затем переименуйте.", entry.RelPath, entry.DocumentId));
 
+        Func<Guid, string?>? folders = null;
         var whereUsed = await Api.GetWhereUsedAsync(entry.DocumentId, detail.Document.LatestVersion, ct).ConfigureAwait(false);
         foreach (var parentId in whereUsed.Items.Where(i => i.IsParentLatest && i.ParentDocumentId != entry.DocumentId).Select(i => i.ParentDocumentId).Distinct())
         {
             var pd = await Api.GetDocumentAsync(parentId, ct).ConfigureAwait(false);
             var pLatest = pd.Versions.FirstOrDefault(v => v.Number == pd.Document.LatestVersion) ?? pd.Versions.First();
             var pEntry = state.FindByDocument(parentId);
+            var pProject = pd.Document.ProjectId;
+            if (folders == null && pProject != state.ProjectId && pProject != Guid.Empty)
+                folders = await ProjectFoldersAsync(state.ProjectId, new[] { pProject }, ct).ConfigureAwait(false);
+            var pFolder = folders?.Invoke(pProject);
             var parent = new RenameParent
             {
                 DocumentId = parentId,
-                RelPath = pd.Document.RelPath,
+                RelPath = LocalRelPath(pFolder, pd.Document.RelPath),
+                DocumentRelPath = pd.Document.RelPath,
+                ProjectFolder = pFolder,
                 Designation = pd.Document.Designation,
                 Name = pd.Document.Name,
                 LatestVersion = pd.Document.LatestVersion,
@@ -239,7 +261,7 @@ public sealed partial class WorkspaceService
                     ? new CheckinReference { RefPath = r.RefPath, DocumentId = r.ChildDocumentId }
                     : new CheckinReference { RefPath = r.RefPath, DocumentId = r.ChildDocumentId, Version = r.ChildVersion };
 
-            var renamedItem = ItemFromVersion(plan.Latest, plan.DocumentId, plan.NewRelPath);
+            var renamedItem = ItemFromVersion(plan.Latest, plan.DocumentId, string.IsNullOrEmpty(plan.NewDocumentRelPath) ? plan.NewRelPath : plan.NewDocumentRelPath);
             renamedItem.References = plan.Latest.References.Where(r => r.ChildDocumentId != plan.DocumentId).Select(MapPublished).ToList();
             if (renamedItem.References.Any(r => r.DocumentId == null && r.TempKey == null)) request.AllowUnresolvedReferences = true;
             request.Items.Add(renamedItem);
@@ -259,7 +281,7 @@ public sealed partial class WorkspaceService
                 var size = new FileInfo(copy).Length;
                 stagedParents[p.DocumentId] = (copy, sha, size);
 
-                var item = ItemFromVersion(p.Latest, p.DocumentId, p.RelPath);
+                var item = ItemFromVersion(p.Latest, p.DocumentId, string.IsNullOrEmpty(p.DocumentRelPath) ? p.RelPath : p.DocumentRelPath);
                 item.Sha256 = sha;
                 item.Size = size;
                 item.CadVersion = info.CadVersion ?? item.CadVersion;
@@ -351,6 +373,7 @@ public sealed partial class WorkspaceService
                 state.Entries.Add(new WorkspaceEntry
                 {
                     RelPath = p.RelPath,
+                    ProjectFolder = p.ProjectFolder,
                     DocumentId = p.DocumentId,
                     Version = VersionOf(p.DocumentId),
                     Sha256 = sha,
@@ -463,10 +486,14 @@ public sealed partial class WorkspaceService
         return view;
     }
 
-    /// <summary>Дерево комплекта для экрана «Комплект» с состояниями из рабочей папки (если задана).</summary>
-    public async Task<KitTreeNode> GetKitTreeAsync(Guid documentId, int version, string? workRoot = null, CancellationToken ct = default)
+    /// <summary>
+    /// Дерево комплекта для экрана «Комплект» с состояниями из рабочей папки (если задана).
+    /// <paramref name="includeDrawings"/> — с чертежами документов комплекта (под моделями, см. <see cref="KitTreeBuilder"/>).
+    /// </summary>
+    public async Task<KitTreeNode> GetKitTreeAsync(Guid documentId, int version, string? workRoot = null, CancellationToken ct = default,
+        bool includeDrawings = false)
     {
-        var kit = await Api.GetKitAsync(documentId, version, ct).ConfigureAwait(false);
+        var kit = await Api.GetKitAsync(documentId, version, includeDrawings, ct).ConfigureAwait(false);
         var me = await GetMeAsync(ct).ConfigureAwait(false);
         WorkspaceStatus? status = null;
         if (workRoot != null && IsWorkspace(workRoot))

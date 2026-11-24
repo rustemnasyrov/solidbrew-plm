@@ -75,7 +75,7 @@ public sealed partial class BrowserViewModel : ObservableObject
         var author = string.IsNullOrWhiteSpace(Author) ? null : Author.Trim();
         var project = SelectedProject?.Id;
         var unused = IncludeUnused;
-        var outcome = await Flow.Busy.RunAsync("Поиск", (_, ct) => Session.Api.SearchDocumentsAsync(q, project, author, unused, 500, ct));
+        var outcome = await Flow.Busy.RunAsync("Поиск", (_, ct) => Session.Api.SearchDocumentsAsync(q, project, author, unused, 500, ct: ct));
         if (!outcome.Ok) return;
         var keep = SelectedDocument?.Id;
         var me = Session.Me.Id;

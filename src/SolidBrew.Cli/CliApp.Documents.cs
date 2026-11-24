@@ -12,7 +12,7 @@ public sealed partial class CliApp
     {
         var text = _args.Positionals.Count > 0 ? string.Join(" ", _args.Positionals) : null;
         Guid? projectId = _args.Value("project") is { } p ? (await ResolveProjectAsync(p).ConfigureAwait(false)).Id : null;
-        var found = await Api.SearchDocumentsAsync(text, projectId, _args.Value("author"), _args.Flag("all"), _args.Int("limit") ?? 200, _ct).ConfigureAwait(false);
+        var found = await Api.SearchDocumentsAsync(text, projectId, _args.Value("author"), _args.Flag("all"), _args.Int("limit") ?? 200, ct: _ct).ConfigureAwait(false);
         Emit(found, () =>
         {
             if (found.Count == 0)
@@ -24,6 +24,32 @@ public sealed partial class CliApp
             {
                 d.Designation, d.Name, d.RelPath, "v" + d.LatestVersion, d.LatestAuthorDisplayName, d.ProjectName,
                 LockText(d.Lock) + (d.Status == DocumentStatus.Unused ? ", не используется" : ""), d.Id.ToString(),
+            }));
+        });
+        return Ok;
+    }
+
+    /// <summary>Изделия: корневые сборки (не входят в другие документы, кроме чертежей) или с --all — все сборки.</summary>
+    private async Task<int> ProductsAsync()
+    {
+        var text = _args.Positionals.Count > 0 ? string.Join(" ", _args.Positionals) : null;
+        Guid? projectId = _args.Value("project") is { } p ? (await ResolveProjectAsync(p).ConfigureAwait(false)).Id : null;
+        var all = _args.Flag("all");
+        var found = await Api.SearchDocumentsAsync(text, projectId, limit: _args.Int("limit") ?? 2000, roots: !all, ct: _ct).ConfigureAwait(false);
+        if (all) found = found.Where(d => d.Kind == DocumentKind.Assembly).ToList();
+        var pinned = Profile.PinnedProducts.Select(x => x.DocumentId).ToHashSet();
+        Emit(found, () =>
+        {
+            if (found.Count == 0)
+            {
+                Out.WriteLine(all ? "Сборок не найдено." : "Корневых изделий не найдено. Все сборки: products --all.");
+                return;
+            }
+            Table(new[] { "Обозначение", "Наименование", "Файл", "Версия", "Проект", "Входит в", "Состояние", "ID" }, found.Select(d => new[]
+            {
+                (pinned.Contains(d.Id) ? "* " : "") + d.Designation, d.Name, d.RelPath, "v" + d.LatestVersion, d.ProjectName,
+                d.UsedInCount == 0 ? "—" : d.UsedInCount.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                LockText(d.Lock), d.Id.ToString(),
             }));
         });
         return Ok;
@@ -167,7 +193,7 @@ public sealed partial class CliApp
             id = state.HeadDocumentId.Value;
             version = _args.Int("version") ?? state.HeadVersion ?? (await Api.GetDocumentAsync(id, _ct).ConfigureAwait(false)).Document.LatestVersion;
         }
-        var tree = await Service.GetKitTreeAsync(id, version, workRoot, _ct).ConfigureAwait(false);
+        var tree = await Service.GetKitTreeAsync(id, version, workRoot, _ct, includeDrawings: !_args.Flag("no-drawings")).ConfigureAwait(false);
         Emit(tree, () => PrintTree(tree, ""));
         return Ok;
     }
@@ -175,7 +201,7 @@ public sealed partial class CliApp
     private void PrintTree(KitTreeNode node, string indent)
     {
         var name = node.IsUnresolved ? node.RefPath : node.RelPath;
-        var head = node.IsUnresolved ? name : $"{name} v{node.Version}" + (node.Designation != null ? $" «{node.Designation}»" : "");
+        var head = node.IsUnresolved ? name : (node.IsAttachedDrawing ? "[чертёж] " : "") + $"{name} v{node.Version}" + (node.Designation != null ? $" «{node.Designation}»" : "");
         Out.WriteLine($"{indent}{head} — {node.StateText}{(node.IsCycle ? " (цикл)" : "")}");
         foreach (var child in node.Children) PrintTree(child, indent + "  ");
     }
