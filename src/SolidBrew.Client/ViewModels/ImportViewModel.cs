@@ -217,7 +217,7 @@ public sealed partial class ImportViewModel : DialogViewModel
         Result = result;
         Busy.Done(result.Message);
         OpenAfter = Dialogs.Confirm("Поставлено на учёт",
-            $"{result.Message}\nОткрыть комплект (v{result.HeadVersion}) в рабочую папку?", "Открыть", "Не сейчас");
+            $"{result.Message}\nОткрыть его как изделие (v{result.HeadVersion}, с чертежами)?", "Открыть", "Не сейчас");
         Close(true);
     }
 

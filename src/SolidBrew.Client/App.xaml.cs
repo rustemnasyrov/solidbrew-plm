@@ -3,10 +3,14 @@ using System.Windows.Threading;
 using SolidBrew.Client.Infrastructure;
 using SolidBrew.Client.ViewModels;
 using SolidBrew.Client.Views;
+using SolidBrew.Core.Contracts;
 
 namespace SolidBrew.Client;
 
-/// <summary>Точка входа: вход → главное окно; «Выйти» возвращает ко входу.</summary>
+/// <summary>
+/// Точка входа: вход → окно последнего изделия (или стартовое окно выбора изделия) → «Выйти» возвращает ко входу.
+/// Окон изделий может быть несколько («Открыть в новом окне»); приложение закрывается с последним.
+/// </summary>
 public partial class App : Application
 {
     private ClientFactory? _factory;
@@ -46,20 +50,8 @@ public partial class App : Application
                 Shutdown(0);
                 return;
             }
-            var session = login.Session!;
-            var main = new MainViewModel(session, login.Notifications);
-            var window = new MainWindow { DataContext = main };
-            var done = new TaskCompletionSource<bool>();
-            main.LogoutRequested += (_, _) =>
-            {
-                done.TrySetResult(true);
-                window.Close();
-            };
-            window.Closed += (_, _) => done.TrySetResult(false);
-            MainWindow = window;
-            window.Show();
-            await main.InitializeAsync();
-            if (!await done.Task)
+            var windows = new ProductWindows(login.Session!);
+            if (!await windows.RunAsync(login.Notifications))
             {
                 Shutdown(0);
                 return;
@@ -79,5 +71,65 @@ public partial class App : Application
     {
         _factory?.Dispose();
         base.OnExit(e);
+    }
+
+    /// <summary>Окна изделий одного сеанса.</summary>
+    private sealed class ProductWindows
+    {
+        private readonly AppSession _session;
+        private readonly List<ProductWindow> _windows = new();
+        private readonly TaskCompletionSource<bool> _done = new();
+        private bool _logout;
+
+        public ProductWindows(AppSession session) => _session = session;
+
+        /// <summary>true — выход (показать вход снова), false — все окна закрыты.</summary>
+        public async Task<bool> RunAsync(IEnumerable<NotificationDto>? notifications)
+        {
+            var first = ProductFolders.LastProduct(_session.Profile) ?? AskProduct();
+            if (first == null) return false;
+            await OpenWindowAsync(first, notifications);
+            return await _done.Task;
+        }
+
+        private ProductRef? AskProduct()
+        {
+            var start = new StartViewModel(_session);
+            return _session.Services.Dialogs.ShowDialog(start) == true ? start.Choice : null;
+        }
+
+        private async Task OpenWindowAsync(ProductRef? product, IEnumerable<NotificationDto>? notifications)
+        {
+            var vm = new ProductWindowViewModel(_session, NodeTabRegistry.CreateDefault(), notifications);
+            var window = new ProductWindow { DataContext = vm };
+            vm.NewWindowRequested += async (_, p) =>
+            {
+                var target = p ?? AskProduct();
+                if (target != null) await OpenWindowAsync(target, null);
+            };
+            vm.LogoutRequested += (_, _) =>
+            {
+                _logout = true;
+                foreach (var w in _windows.ToList()) w.Close();
+                _done.TrySetResult(true);
+            };
+            window.Closed += (_, _) =>
+            {
+                _windows.Remove(window);
+                if (_windows.Count == 0) _done.TrySetResult(_logout);
+                else if (ReferenceEquals(Current.MainWindow, window)) Current.MainWindow = _windows[0];
+            };
+            _windows.Add(window);
+            if (Current.MainWindow == null || !Current.MainWindow.IsVisible) Current.MainWindow = window;
+            if (_windows.Count > 1)
+            {
+                window.WindowStartupLocation = WindowStartupLocation.Manual;
+                var prev = _windows[^2];
+                window.Left = prev.Left + 40;
+                window.Top = prev.Top + 40;
+            }
+            window.Show();
+            await vm.OpenProductAsync(product);
+        }
     }
 }

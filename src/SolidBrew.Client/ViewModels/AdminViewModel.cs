@@ -10,7 +10,7 @@ namespace SolidBrew.Client.ViewModels;
 /// Экран «Администрирование» (6.1 п. 8, 7.11): пользователи и роли, текущие блокировки с принудительным снятием,
 /// проекты и библиотека, рабочие версии CAD, журнал.
 /// </summary>
-public sealed partial class AdminViewModel : ObservableObject
+public sealed partial class AdminViewModel : DialogViewModel
 {
     private static readonly (string CadId, string Name)[] KnownCads =
     {
@@ -20,14 +20,18 @@ public sealed partial class AdminViewModel : ObservableObject
         ("testcad", "Тестовый CAD"),
     };
 
-    private readonly MainViewModel _main;
     private bool _loaded;
 
-    public AdminViewModel(MainViewModel main) => _main = main;
+    public AdminViewModel(AppSession session) : base(session.Services.Dialogs) => Session = session;
 
-    private AppSession Session => _main.Session;
-    private BusyState Busy => _main.Busy;
-    private IDialogService Dialogs => Session.Services.Dialogs;
+    private AppSession Session { get; }
+
+    public override string Title => "Администрирование";
+
+    public override Task InitializeAsync() => EnsureLoadedAsync();
+
+    [RelayCommand]
+    private void CloseWindow() => Close(true);
 
     public ObservableCollection<UserRow> Users { get; } = new();
     public ObservableCollection<LockRow> Locks { get; } = new();
@@ -252,7 +256,6 @@ public sealed partial class AdminViewModel : ObservableObject
         Busy.Done($"Создан{(request.Kind == ProjectKind.Library ? "а библиотека" : " проект")} «{outcome.Value!.Name}».");
         NewProjectName = string.Empty;
         await LoadProjectsAsync();
-        await _main.Browser.LoadProjectsAsync();
     }
 
     // ------------------------------------------------------------------ настройки сервера

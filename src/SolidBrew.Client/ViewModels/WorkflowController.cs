@@ -13,13 +13,14 @@ public sealed partial class WorkflowController : ObservableObject
 {
     private readonly AppSession _session;
 
-    public WorkflowController(AppSession session, BusyState busy)
+    /// <param name="restoreLast">Начать с последней рабочей папки профиля (окно изделия задаёт папку само).</param>
+    public WorkflowController(AppSession session, BusyState busy, bool restoreLast = true)
     {
         _session = session;
         Busy = busy;
         foreach (var w in session.Profile.RecentWorkspaces) RecentWorkspaces.Add(w);
         var last = session.Profile.LastWorkspace;
-        if (!string.IsNullOrWhiteSpace(last) && Directory.Exists(last)) _workRoot = last;
+        if (restoreLast && !string.IsNullOrWhiteSpace(last) && Directory.Exists(last)) _workRoot = last;
     }
 
     public BusyState Busy { get; }
@@ -116,8 +117,8 @@ public sealed partial class WorkflowController : ObservableObject
 
     // ------------------------------------------------------------------ открыть
 
-    /// <summary>«Открыть»: выбранная версия комплекта в рабочую папку.</summary>
-    public async Task<bool> OpenAsync(Guid documentId, int? version, string? label = null)
+    /// <summary>«Открыть»: выбранная версия комплекта в текущую рабочую папку (если не задана — спросить).</summary>
+    public async Task<bool> OpenAsync(Guid documentId, int? version, string? label = null, bool includeDrawings = false)
     {
         var root = WorkRoot;
         if (root == null)
@@ -125,19 +126,22 @@ public sealed partial class WorkflowController : ObservableObject
             if (!ChooseWorkRoot("Рабочая папка для открытия" + (label != null ? $" {label}" : string.Empty))) return false;
             root = WorkRoot!;
         }
+        var opened = await OpenIntoAsync(root, documentId, version, label, includeDrawings);
+        if (opened == null) return false;
+        SetWorkRoot(opened);
+        RaiseChanged();
+        return true;
+    }
+
+    /// <summary>
+    /// «Открыть» в заданную папку. Без конфликтов и ошибок открывается сразу, ничего не спрашивая;
+    /// иначе показывается окно конфликтов. Возвращает итоговую рабочую папку (в окне её можно сменить) или null.
+    /// </summary>
+    public Task<string?> OpenIntoAsync(string workRoot, Guid documentId, int? version, string? label, bool includeDrawings)
+    {
         var ws = Workspace;
-        var vm = new OpenViewModel(ws, Dialogs, Shell, root,
-            (r, p, ct) => ws.PrepareOpenAsync(r, documentId, version, p, ct),
-            "Открыть" + (label != null ? $" {label}" : string.Empty) + (version != null ? $" v{version}" : string.Empty));
-        var result = Dialogs.ShowDialog(vm);
-        await Task.CompletedTask;
-        if (vm.IsDone)
-        {
-            SetWorkRoot(vm.WorkRoot);
-            Busy.Done(vm.Result?.Message ?? "Открыто.");
-            RaiseChanged();
-        }
-        return result == true || vm.IsDone;
+        var title = "Открыть" + (label != null ? $" {label}" : string.Empty) + (version != null ? $" v{version}" : string.Empty);
+        return RunOpenPlanAsync(workRoot, (r, p, ct) => ws.PrepareOpenAsync(r, documentId, version, p, ct, includeDrawings), title);
     }
 
     /// <summary>«Обновить до последней»: документы рабочей папки — до последних версий (со своими комплектами).</summary>
@@ -148,15 +152,50 @@ public sealed partial class WorkflowController : ObservableObject
         if (root == null) return false;
         var ws = Workspace;
         var ids = documentIds.ToList();
-        var vm = new OpenViewModel(ws, Dialogs, Shell, root, (r, p, ct) => ws.PrepareUpdateToLatestAsync(r, ids, p, ct), "Обновить до последней версии");
-        Dialogs.ShowDialog(vm);
-        await Task.CompletedTask;
-        if (vm.IsDone)
+        var done = await RunOpenPlanAsync(root, (r, p, ct) => ws.PrepareUpdateToLatestAsync(r, ids, p, ct), "Обновить до последней версии");
+        RaiseChanged();
+        return done != null;
+    }
+
+    /// <summary>Подготовить план; без конфликтов и ошибок — выполнить сразу, иначе — окно конфликтов.</summary>
+    private async Task<string?> RunOpenPlanAsync(string root, OpenViewModel.PlanFactory prepare, string title)
+    {
+        var prepared = await Busy.RunAsync("Подготовка: " + title, (p, ct) => prepare(root, p, ct));
+        if (!prepared.Ok) return null;
+        var plan = prepared.Value!;
+        var ws = Workspace;
+        // Другая версия того же документа без правок заменяется молча; правки, чужие файлы и перемещения — решает пользователь.
+        var needsDecision = plan.Conflicts.Any(c => c.Kind != OpenConflictKind.OtherVersion || c.Resolution != ConflictResolution.Replace);
+        if (plan.CanExecute && !needsDecision)
         {
-            Busy.Done(vm.Result?.Message ?? "Обновлено.");
-            RaiseChanged();
+            var outcome = await Busy.RunAsync(title, (p, ct) => ws.ExecuteOpenAsync(plan, false, p, ct));
+            if (!outcome.Ok) return null;
+            var result = outcome.Value!;
+            if (!result.Success)
+            {
+                Dialogs.ShowError(title, ErrorText.FromProblems(result.Message, result.Problems));
+                return null;
+            }
+            Busy.Done(result.Message);
+            var infos = plan.Problems.Concat(result.Problems).Where(p => !p.IsBlocking).Select(p => p.Message).Distinct().ToList();
+            if (infos.Count > 0) Notices?.Invoke(this, infos);
+            return root;
         }
-        return vm.IsDone;
+
+        var first = true;
+        var vm = new OpenViewModel(ws, Dialogs, Shell, root, (r, p, ct) =>
+        {
+            if (first && string.Equals(r, root, StringComparison.OrdinalIgnoreCase))
+            {
+                first = false;
+                return Task.FromResult(plan);
+            }
+            return prepare(r, p, ct);
+        }, title);
+        Dialogs.ShowDialog(vm);
+        if (!vm.IsDone) return null;
+        Busy.Done(vm.Result?.Message ?? "Открыто.");
+        return vm.WorkRoot;
     }
 
     // ------------------------------------------------------------------ блокировки
@@ -169,6 +208,7 @@ public sealed partial class WorkflowController : ObservableObject
         if (root == null) return false;
         var ws = Workspace;
         var ids = documentIds.ToList();
+        if (!await ConfirmOtherCopiesAsync("Взять в работу", root, ids, "Всё равно взять")) return false;
         var outcome = await Busy.RunAsync("Взять в работу", (_, ct) => ws.CheckOutAsync(root, ids, ct));
         if (!outcome.Ok) return false;
         var result = outcome.Value!;
@@ -250,9 +290,15 @@ public sealed partial class WorkflowController : ObservableObject
         if (!EnsureCanModify("Сдать")) return false;
         var root = RequireWorkspace("Сдать");
         if (root == null) return false;
-        var vm = new CheckinViewModel(Workspace, Dialogs, root);
+        var ws = Workspace;
+        var changed = await Busy.RunAsync("Проверка правок", async (p, ct) =>
+        {
+            var status = await ws.GetStatusAsync(root, false, p, ct);
+            return status.Files.Where(f => f.Local == LocalFileState.ModifiedLocally && f.DocumentId != null).Select(f => f.DocumentId!.Value).ToList();
+        }, reportErrors: false);
+        if (changed.Ok && !await ConfirmOtherCopiesAsync("Сдать", root, changed.Value!, "Всё равно сдать")) return false;
+        var vm = new CheckinViewModel(ws, Dialogs, root);
         var ok = Dialogs.ShowDialog(vm) == true;
-        await Task.CompletedTask;
         if (ok && vm.Result != null)
         {
             Busy.Done(vm.Result.Message);
@@ -263,29 +309,49 @@ public sealed partial class WorkflowController : ObservableObject
         return ok;
     }
 
-    /// <summary>«Поставить на учёт»; после — предложение открыть в рабочую папку.</summary>
-    public async Task<bool> ImportAsync(Guid? preferredProject)
+    /// <summary>
+    /// «Поставить на учёт». Возвращает новое изделие, если пользователь выбрал «Открыть» (его открывает окно изделия), иначе null.
+    /// </summary>
+    public ProductRef? Import(Guid? preferredProject)
     {
-        if (!EnsureCanModify("Поставить на учёт")) return false;
+        if (!EnsureCanModify("Поставить на учёт")) return null;
         var vm = new ImportViewModel(_session, preferredProject);
         var ok = Dialogs.ShowDialog(vm) == true && vm.Result is { Success: true };
-        if (!ok) return false;
+        if (!ok) return null;
         Busy.Done(vm.Result!.Message);
         RaiseChanged();
-        if (vm.OpenAfter)
+        return vm.OpenAfter ? new ProductRef(vm.Result.HeadDocumentId) : null;
+    }
+
+    // ------------------------------------------------------------------ правки в других рабочих папках
+
+    /// <summary>
+    /// Предупредить, если документы изменены и в другой моей рабочей папке (правки в двух папках не сливаются).
+    /// Проверка хеширует файлы — выполняется не в потоке окна. true — продолжать.
+    /// </summary>
+    public async Task<bool> ConfirmOtherCopiesAsync(string action, string root, IReadOnlyCollection<Guid> documentIds, string proceedText)
+    {
+        if (documentIds.Count == 0) return true;
+        var known = ProductFolders.KnownWorkspaces(_session.Profile);
+        if (known.Count == 0) return true;
+        var ids = documentIds.Distinct().ToList();
+        var outcome = await Busy.RunAsync("Проверка других рабочих папок", (_, ct) =>
         {
-            // Для нового проекта нужна своя рабочая папка.
-            if (WorkRoot != null && WorkspaceService.IsWorkspace(WorkRoot))
+            var list = new List<WorkspaceCopy>();
+            foreach (var id in ids)
             {
-                var state = Workspace.LoadState(WorkRoot);
-                var project = vm.SelectedProject?.Id;
-                if (project != null && state.ProjectId != project &&
-                    !ChooseWorkRoot("Рабочая папка для нового проекта (папка текущей рабочей папки относится к другому проекту)"))
-                    return true;
+                ct.ThrowIfCancellationRequested();
+                list.AddRange(WorkspaceService.FindOtherWorkspaceCopies(id, root, known).Where(c => c.IsModified));
             }
-            await OpenAsync(vm.Result.HeadDocumentId, vm.Result.HeadVersion);
-        }
-        return true;
+            return Task.FromResult(list);
+        }, reportErrors: false);
+        if (!outcome.Ok || outcome.Value!.Count == 0) return true;
+        var copies = outcome.Value;
+        return Dialogs.Confirm(action,
+            copies.Count == 1
+                ? "Документ изменён и в другой вашей рабочей папке."
+                : $"Документы изменены и в других ваших рабочих папках ({copies.Count}).",
+            proceedText, "Отмена", copies.Select(c => c.Message));
     }
 
     // ------------------------------------------------------------------ прочее

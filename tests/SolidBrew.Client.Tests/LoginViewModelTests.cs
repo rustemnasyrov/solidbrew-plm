@@ -43,8 +43,8 @@ public sealed class LoginViewModelTests : IDisposable
         Assert.Equal("http://pdm:8088/", _env.Profiles.Stored.ServerUrl);
         Assert.Equal("token-ivanov", _env.Profiles.SavedToken);
 
-        // Главное окно показывает уведомления; «Прочитано» отмечает их на сервере.
-        var main = new MainViewModel(vm.Session, vm.Notifications);
+        // Окно изделия показывает уведомления; «Скрыть» отмечает их на сервере прочитанными.
+        var main = new ProductWindowViewModel(vm.Session, notifications: vm.Notifications);
         Assert.Single(main.Notices);
         await main.DismissNoticesCommand.ExecuteAsync(null);
         Assert.Empty(main.Notices);
@@ -124,11 +124,11 @@ public sealed class LoginViewModelTests : IDisposable
         _env.Server.AddUser("reader", "Читатель", UserRole.Reader);
         var s = _env.Session("reader");
         Assert.False(s.CanModify);
-        var main = new MainViewModel(s);
+        var main = new ProductWindowViewModel(s);
         Assert.True(main.IsReader);
+        Assert.False(main.IsAdmin);
         Assert.False(main.ImportCommand.CanExecute(null));
-        Assert.False(main.CheckinCommand.CanExecute(null));
-        Assert.Null(main.Admin);
+        Assert.False(main.CheckinAllCommand.CanExecute(null));
     }
 
     private static ServerCertificateInfo Certificate(char fill = 'C') =>

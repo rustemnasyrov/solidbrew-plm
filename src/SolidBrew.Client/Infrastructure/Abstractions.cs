@@ -77,4 +77,7 @@ public sealed class AppServices
     public IShellService Shell { get; }
     public IProfileStore Profiles { get; }
     public IClientFactory Factory { get; }
+
+    /// <summary>Где по умолчанию создаются рабочие папки изделий: <c>&lt;корень&gt;\&lt;обозначение&gt;</c>.</summary>
+    public string ProductsRoot { get; init; } = @"C:\PDM";
 }

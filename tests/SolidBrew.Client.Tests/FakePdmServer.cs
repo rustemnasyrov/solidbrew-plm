@@ -135,11 +135,8 @@ public sealed class FakePdmServer
         var kit = new KitDto { HeadDocumentId = id, HeadVersion = version };
         var seen = new HashSet<(Guid, int)>();
         var queue = new Queue<(Guid, int)>();
-        queue.Enqueue((id, version));
-        seen.Add((id, version));
-        while (queue.Count > 0)
+        void Add(Guid did, int ver, bool attached)
         {
-            var (did, ver) = queue.Dequeue();
             var d = Docs[did];
             var v = d.Versions.First(x => x.Number == ver);
             kit.Items.Add(new KitItemDto
@@ -159,6 +156,7 @@ public sealed class FakePdmServer
                 Status = d.Status,
                 Lock = Clone(d.Lock),
                 ProjectId = d.ProjectId,
+                IsAttachedDrawing = attached,
             });
             foreach (var r in v.Refs)
             {
@@ -168,7 +166,38 @@ public sealed class FakePdmServer
                     continue;
                 }
                 kit.Edges.Add(new KitEdgeDto { ParentDocumentId = did, ParentVersion = ver, ChildDocumentId = r.Child.Value, ChildVersion = r.ChildVersion!.Value, RefPath = r.RefPath });
+                if (attached && kit.Items.Any(i => i.DocumentId == r.Child.Value)) continue; // документ комплекта — в своей версии
                 if (seen.Add((r.Child.Value, r.ChildVersion.Value))) queue.Enqueue((r.Child.Value, r.ChildVersion.Value));
+            }
+        }
+        void Drain(bool attached)
+        {
+            while (queue.Count > 0)
+            {
+                var (did, ver) = queue.Dequeue();
+                if (attached && kit.Items.Any(i => i.DocumentId == did)) continue;
+                Add(did, ver, attached);
+            }
+        }
+        queue.Enqueue((id, version));
+        seen.Add((id, version));
+        Drain(false);
+        if (includeDrawings)
+        {
+            // Как сервер: последние версии активных чертежей, ссылающихся на документы комплекта, и их недостающие зависимости.
+            var kitVersions = kit.Items.GroupBy(i => i.DocumentId).ToDictionary(g => g.Key, g => g.Select(i => i.Version).ToHashSet());
+            foreach (var d in Docs.Values.Where(d => d.Status == DocumentStatus.Active && d.Latest.Kind == DocumentKind.Drawing && !kitVersions.ContainsKey(d.Id))
+                         .OrderBy(d => d.Latest.RelPath, StringComparer.OrdinalIgnoreCase))
+            {
+                if (!d.Latest.Refs.Any(r => r.Child is { } c && kitVersions.ContainsKey(c))) continue;
+                if (!seen.Add((d.Id, d.Latest.Number))) continue;
+                queue.Enqueue((d.Id, d.Latest.Number));
+                Drain(true);
+            }
+            foreach (var item in kit.Items.Where(i => i.IsAttachedDrawing && i.Kind == DocumentKind.Drawing))
+            {
+                item.DrawingModelVersionMismatch = kit.Edges.Any(e => e.ParentDocumentId == item.DocumentId && e.ParentVersion == item.Version &&
+                    kitVersions.TryGetValue(e.ChildDocumentId, out var versions) && !versions.Contains(e.ChildVersion));
             }
         }
         return kit;

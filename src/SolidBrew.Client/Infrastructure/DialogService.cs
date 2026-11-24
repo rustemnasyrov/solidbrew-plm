@@ -60,6 +60,8 @@ public sealed class DialogService : IDialogService
             OpenViewModel => new OpenWindow(),
             ExportViewModel => new ExportWindow(),
             RenameViewModel => new RenameWindow(),
+            StartViewModel => new StartWindow(),
+            AdminViewModel => new AdminWindow(),
             _ => throw new NotSupportedException($"Нет окна для {viewModel.GetType().Name}."),
         };
         window.DataContext = viewModel;

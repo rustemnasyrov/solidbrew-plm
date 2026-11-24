@@ -30,7 +30,13 @@
                     <RowDefinition Height="Auto" />
                 </Grid.RowDefinitions>
                 <TextBlock Text="Проект" VerticalAlignment="Center" Margin="0,0,8,0" />
-                <ComboBox Grid.Column="1" ItemsSource="{Binding Projects}" SelectedItem="{Binding SelectedProject}" DisplayMemberPath="Name" />
+                <ComboBox Grid.Column="1" ItemsSource="{Binding Projects}" SelectedItem="{Binding SelectedProject}" DisplayMemberPath="Name" AutomationProperties.Name="Проект">
+                    <ComboBox.ItemContainerStyle>
+                        <Style TargetType="ComboBoxItem">
+                            <Setter Property="AutomationProperties.Name" Value="{Binding Name}" />
+                        </Style>
+                    </ComboBox.ItemContainerStyle>
+                </ComboBox>
                 <TextBlock Grid.Column="2" Text="Комментарий" VerticalAlignment="Center" Margin="16,0,8,0" />
                 <TextBox Grid.Column="3" Text="{Binding Comment, UpdateSourceTrigger=PropertyChanged}" />
                 <CheckBox Grid.Row="1" Grid.ColumnSpan="4" Margin="0,8,0,0" IsChecked="{Binding AllowMissing}"

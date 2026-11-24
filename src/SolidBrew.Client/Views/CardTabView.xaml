@@ -1,0 +1,31 @@
+<UserControl x:Class="SolidBrew.Client.Views.CardTabView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <!-- «Карточка»: сведения о файле и свойства CAD по конфигурациям (только чтение). -->
+    <DockPanel>
+        <StackPanel DockPanel.Dock="Top">
+            <TextBlock Text="Загрузка…" Style="{StaticResource Muted}" Visibility="{Binding IsLoading, Converter={StaticResource BoolVis}}" />
+            <ItemsControl ItemsSource="{Binding Info}" Grid.IsSharedSizeScope="True" Margin="0,0,0,10">
+                <ItemsControl.ItemTemplate>
+                    <DataTemplate>
+                        <Grid Margin="0,2">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto" SharedSizeGroup="Label" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Text="{Binding Label}" Foreground="{StaticResource MutedBrush}" Margin="0,0,16,0" />
+                            <TextBlock Grid.Column="1" Text="{Binding Value}" TextWrapping="Wrap" />
+                        </Grid>
+                    </DataTemplate>
+                </ItemsControl.ItemTemplate>
+            </ItemsControl>
+            <TextBlock Text="Свойства CAD" Style="{StaticResource SubHeader}" Visibility="{Binding HasAnyProperties, Converter={StaticResource BoolVis}}" />
+            <TextBlock Text="{Binding Message}" Style="{StaticResource Muted}" Margin="0,4" Visibility="{Binding Message, Converter={StaticResource NullVis}}" />
+        </StackPanel>
+        <CheckBox DockPanel.Dock="Bottom" Content="{Binding ShowEmptyText}" IsChecked="{Binding ShowEmpty}" Margin="0,8,0,0"
+                  Foreground="{StaticResource MutedBrush}" Visibility="{Binding HasEmpty, Converter={StaticResource BoolVis}}"
+                  ToolTip="Свойства без значения ни в одной конфигурации (поля штампа из шаблона и т. п.)" />
+        <DataGrid x:Name="PropertiesGrid" ItemsSource="{Binding Properties}" Visibility="{Binding HasProperties, Converter={StaticResource BoolVis}}"
+                  ToolTip="Свойства читаются из файла CAD; изменить их можно только в CAD (взять в работу, изменить, сдать)." />
+    </DockPanel>
+</UserControl>

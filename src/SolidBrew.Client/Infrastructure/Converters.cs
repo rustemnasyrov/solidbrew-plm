@@ -6,16 +6,16 @@ using SolidBrew.Client.ViewModels;
 
 namespace SolidBrew.Client.Infrastructure;
 
-/// <summary>Цвет метки состояния документа.</summary>
+/// <summary>Цвет метки состояния документа. Свободен — без метки.</summary>
 public sealed class MarkToBrushConverter : IValueConverter
 {
-    public static readonly Brush Free = Frozen("#2E7D32");
+    public static readonly Brush Free = Brushes.Transparent;
     public static readonly Brush Mine = Frozen("#1565C0");
     public static readonly Brush Other = Frozen("#C62828");
     public static readonly Brush Modified = Frozen("#EF6C00");
     public static readonly Brush Draft = Frozen("#7B1FA2");
-    public static readonly Brush Outdated = Frozen("#C9A000");
-    public static readonly Brush Missing = Frozen("#616161");
+    public static readonly Brush Outdated = Frozen("#D9A900");
+    public static readonly Brush Missing = Frozen("#8A8F96");
 
     private static Brush Frozen(string color)
     {
@@ -93,12 +93,43 @@ public static class Legend
 {
     public static IReadOnlyList<LegendEntry> Items { get; } = new[]
     {
-        new LegendEntry(MarkToBrushConverter.Free, "свободен"),
         new LegendEntry(MarkToBrushConverter.Mine, "взят мной"),
         new LegendEntry(MarkToBrushConverter.Other, "взят другим"),
-        new LegendEntry(MarkToBrushConverter.Modified, "изменён локально"),
-        new LegendEntry(MarkToBrushConverter.Draft, "черновик"),
-        new LegendEntry(MarkToBrushConverter.Outdated, "устарел / есть новая версия"),
-        new LegendEntry(MarkToBrushConverter.Missing, "отсутствует"),
+        new LegendEntry(MarkToBrushConverter.Modified, "изменён"),
+        new LegendEntry(MarkToBrushConverter.Outdated, "есть новая версия"),
+        new LegendEntry(MarkToBrushConverter.Draft, "черновик (новый файл)"),
+        new LegendEntry(MarkToBrushConverter.Missing, "нет файла / не учтён"),
     };
+}
+
+/// <summary>
+/// Кнопка с выпадающим меню: <c>inf:DropDown.Menu</c> открывается по щелчку под кнопкой
+/// (DataContext меню — DataContext кнопки).
+/// </summary>
+public static class DropDown
+{
+    public static readonly DependencyProperty MenuProperty = DependencyProperty.RegisterAttached(
+        "Menu", typeof(System.Windows.Controls.ContextMenu), typeof(DropDown), new PropertyMetadata(null, OnMenuChanged));
+
+    public static System.Windows.Controls.ContextMenu? GetMenu(DependencyObject d) => (System.Windows.Controls.ContextMenu?)d.GetValue(MenuProperty);
+
+    public static void SetMenu(DependencyObject d, System.Windows.Controls.ContextMenu? value) => d.SetValue(MenuProperty, value);
+
+    private static void OnMenuChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    {
+        if (d is not System.Windows.Controls.Primitives.ButtonBase button) return;
+        button.Click -= OnClick;
+        if (e.NewValue != null) button.Click += OnClick;
+    }
+
+    private static void OnClick(object sender, RoutedEventArgs e)
+    {
+        var button = (System.Windows.Controls.Primitives.ButtonBase)sender;
+        var menu = GetMenu(button);
+        if (menu == null) return;
+        menu.DataContext = button.DataContext;
+        menu.PlacementTarget = button;
+        menu.Placement = System.Windows.Controls.Primitives.PlacementMode.Bottom;
+        menu.IsOpen = true;
+    }
 }

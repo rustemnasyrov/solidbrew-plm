@@ -1,0 +1,169 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+                    xmlns:vm="clr-namespace:SolidBrew.Client.ViewModels"
+                    xmlns:v="clr-namespace:SolidBrew.Client.Views">
+
+    <!-- Вкладки панели узла: шаблон по типу ViewModel. Новая вкладка — новый DataTemplate здесь и строка в NodeTabRegistry. -->
+
+    <Style TargetType="TextBlock" x:Key="TabMessage" BasedOn="{StaticResource Muted}">
+        <Setter Property="Margin" Value="0,6,0,6" />
+    </Style>
+
+    <!-- «Загрузка…» и сообщение вкладки. -->
+    <DataTemplate x:Key="TabStatus">
+        <StackPanel>
+            <TextBlock Text="Загрузка…" Style="{StaticResource TabMessage}" Visibility="{Binding IsLoading, Converter={StaticResource BoolVis}}" />
+            <TextBlock Text="{Binding Message}" Style="{StaticResource TabMessage}" Visibility="{Binding Message, Converter={StaticResource NullVis}}" />
+        </StackPanel>
+    </DataTemplate>
+
+    <DataTemplate DataType="{x:Type vm:CardTabViewModel}">
+        <v:CardTabView />
+    </DataTemplate>
+
+    <DataTemplate DataType="{x:Type vm:CompositionTabViewModel}">
+        <DockPanel>
+            <ContentControl DockPanel.Dock="Top" Content="{Binding}" ContentTemplate="{StaticResource TabStatus}" />
+            <TextBlock DockPanel.Dock="Top" Text="{Binding Summary}" Style="{StaticResource Muted}" Margin="0,0,0,6" />
+            <TextBlock DockPanel.Dock="Bottom" Style="{StaticResource Muted}" FontSize="12" Margin="0,6,0,0"
+                       Text="Двойной щелчок — перейти к компоненту в дереве. «Вхождений» — сколько раз сборка ссылается на документ." />
+            <DataGrid ItemsSource="{Binding Components}">
+                <DataGrid.InputBindings>
+                    <MouseBinding Gesture="LeftDoubleClick" Command="{Binding GoToCommand}"
+                                  CommandParameter="{Binding SelectedItem, RelativeSource={RelativeSource AncestorType=DataGrid}}" />
+                </DataGrid.InputBindings>
+                <DataGrid.Columns>
+                    <DataGridTemplateColumn Width="22" CellTemplate="{StaticResource MarkCell}" />
+                    <DataGridTemplateColumn Header="Обозначение" Width="1.2*" SortMemberPath="Title">
+                        <DataGridTemplateColumn.CellTemplate>
+                            <DataTemplate>
+                                <StackPanel Orientation="Horizontal" ToolTip="{Binding FileName}">
+                                    <TextBlock Style="{StaticResource Icon}" Text="{Binding Glyph}" Foreground="{StaticResource MutedBrush}" Margin="0,0,6,0" />
+                                    <TextBlock Text="{Binding Title}" />
+                                </StackPanel>
+                            </DataTemplate>
+                        </DataGridTemplateColumn.CellTemplate>
+                    </DataGridTemplateColumn>
+                    <DataGridTextColumn Header="Наименование" Binding="{Binding Name}" Width="1.5*" />
+                    <DataGridTextColumn Header="Версия" Binding="{Binding VersionText}" Width="Auto" />
+                    <DataGridTextColumn Header="Вхождений" Binding="{Binding Count}" Width="Auto" />
+                    <DataGridTextColumn Header="" Binding="{Binding NoteText}" Width="Auto" />
+                </DataGrid.Columns>
+            </DataGrid>
+        </DockPanel>
+    </DataTemplate>
+
+    <DataTemplate DataType="{x:Type vm:ModelTabViewModel}">
+        <DockPanel>
+            <ContentControl DockPanel.Dock="Top" Content="{Binding}" ContentTemplate="{StaticResource TabStatus}" />
+            <TextBlock x:Name="Summary" DockPanel.Dock="Top" Text="{Binding Summary}" TextWrapping="Wrap" Margin="0,0,0,8" />
+            <DataGrid ItemsSource="{Binding Models}">
+                <DataGrid.InputBindings>
+                    <MouseBinding Gesture="LeftDoubleClick" Command="{Binding GoToCommand}"
+                                  CommandParameter="{Binding SelectedItem, RelativeSource={RelativeSource AncestorType=DataGrid}}" />
+                </DataGrid.InputBindings>
+                <DataGrid.Columns>
+                    <DataGridTemplateColumn Width="22" CellTemplate="{StaticResource MarkCell}" />
+                    <DataGridTemplateColumn Header="Изображает" Width="1.2*">
+                        <DataGridTemplateColumn.CellTemplate>
+                            <DataTemplate>
+                                <StackPanel Orientation="Horizontal">
+                                    <TextBlock Style="{StaticResource Icon}" Text="{Binding Glyph}" Foreground="{StaticResource MutedBrush}" Margin="0,0,6,0" />
+                                    <TextBlock Text="{Binding Title}" />
+                                </StackPanel>
+                            </DataTemplate>
+                        </DataGridTemplateColumn.CellTemplate>
+                    </DataGridTemplateColumn>
+                    <DataGridTextColumn Header="Наименование" Binding="{Binding Name}" Width="1.5*" />
+                    <DataGridTextColumn Header="Чертёж сдан с" Binding="{Binding DrawnWithText}" Width="Auto" />
+                    <DataGridTextColumn Header="В изделии" Binding="{Binding InProductText}" Width="Auto" />
+                </DataGrid.Columns>
+            </DataGrid>
+        </DockPanel>
+        <DataTemplate.Triggers>
+            <DataTrigger Binding="{Binding HasMismatch}" Value="True">
+                <Setter TargetName="Summary" Property="Foreground" Value="{StaticResource WarningBrush}" />
+            </DataTrigger>
+        </DataTemplate.Triggers>
+    </DataTemplate>
+
+    <DataTemplate DataType="{x:Type vm:VersionsTabViewModel}">
+        <DockPanel>
+            <ContentControl DockPanel.Dock="Top" Content="{Binding}" ContentTemplate="{StaticResource TabStatus}" />
+            <DockPanel DockPanel.Dock="Bottom" Margin="0,8,0,0">
+                <Button DockPanel.Dock="Left" Style="{StaticResource IconButton}" Tag="&#xE896;" Content="Открыть эту версию"
+                        Command="{Binding OpenVersionCommand}" CommandParameter="{Binding SelectedVersion}"
+                        ToolTip="Положить выбранную версию (с её зависимостями) в рабочую папку изделия. Несданные правки без вопроса не затираются." />
+                <TextBlock Style="{StaticResource Muted}" FontSize="12" VerticalAlignment="Center" Margin="6,0,0,0"
+                           Text="Старая версия кладётся в рабочую папку вместо текущей; вернуть последнюю — «Обновить до последней»." />
+            </DockPanel>
+            <DataGrid ItemsSource="{Binding Versions}" SelectedItem="{Binding SelectedVersion}">
+                <DataGrid.Columns>
+                    <DataGridTextColumn Header="Версия" Binding="{Binding NumberText}" Width="Auto" />
+                    <DataGridTextColumn Header="Автор" Binding="{Binding Author}" Width="Auto" />
+                    <DataGridTextColumn Header="Дата" Binding="{Binding DateText}" Width="Auto" />
+                    <DataGridTextColumn Header="Комментарий" Binding="{Binding Comment}" Width="*">
+                        <DataGridTextColumn.ElementStyle>
+                            <Style TargetType="TextBlock">
+                                <Setter Property="TextWrapping" Value="Wrap" />
+                            </Style>
+                        </DataGridTextColumn.ElementStyle>
+                    </DataGridTextColumn>
+                    <DataGridTextColumn Header="CAD" Binding="{Binding CadVersion}" Width="Auto" />
+                    <DataGridTextColumn Header="" Binding="{Binding NoteText}" Width="Auto">
+                        <DataGridTextColumn.ElementStyle>
+                            <Style TargetType="TextBlock">
+                                <Setter Property="Foreground" Value="{StaticResource MutedBrush}" />
+                            </Style>
+                        </DataGridTextColumn.ElementStyle>
+                    </DataGridTextColumn>
+                </DataGrid.Columns>
+            </DataGrid>
+        </DockPanel>
+    </DataTemplate>
+
+    <DataTemplate DataType="{x:Type vm:WhereUsedTabViewModel}">
+        <DockPanel>
+            <ContentControl DockPanel.Dock="Top" Content="{Binding}" ContentTemplate="{StaticResource TabStatus}" />
+            <TextBlock DockPanel.Dock="Top" Text="{Binding Summary}" Style="{StaticResource Muted}" Margin="0,0,0,6" />
+            <TextBlock DockPanel.Dock="Bottom" Style="{StaticResource Muted}" FontSize="12" Margin="0,6,0,0"
+                       Text="Двойной щелчок — перейти к сборке или чертежу, если они входят в это изделие." />
+            <DataGrid ItemsSource="{Binding Items}">
+                <DataGrid.InputBindings>
+                    <MouseBinding Gesture="LeftDoubleClick" Command="{Binding GoToCommand}"
+                                  CommandParameter="{Binding SelectedItem, RelativeSource={RelativeSource AncestorType=DataGrid}}" />
+                </DataGrid.InputBindings>
+                <DataGrid.Columns>
+                    <DataGridTemplateColumn Width="22" CellTemplate="{StaticResource MarkCell}" />
+                    <DataGridTextColumn Header="Где" Binding="{Binding ParentTitle}" Width="1.2*" />
+                    <DataGridTextColumn Header="Наименование" Binding="{Binding ParentName}" Width="1.5*" />
+                    <DataGridTextColumn Header="Версия" Binding="{Binding ParentVersionText}" Width="Auto" />
+                    <DataGridTextColumn Header="Использует" Binding="{Binding ChildVersionText}" Width="Auto" />
+                    <DataGridTextColumn Header="" Binding="{Binding NoteText}" Width="Auto">
+                        <DataGridTextColumn.ElementStyle>
+                            <Style TargetType="TextBlock">
+                                <Setter Property="Foreground" Value="{StaticResource WarningBrush}" />
+                                <Setter Property="FontWeight" Value="SemiBold" />
+                            </Style>
+                        </DataGridTextColumn.ElementStyle>
+                    </DataGridTextColumn>
+                </DataGrid.Columns>
+            </DataGrid>
+        </DockPanel>
+    </DataTemplate>
+
+    <DataTemplate DataType="{x:Type vm:JournalTabViewModel}">
+        <DockPanel>
+            <ContentControl DockPanel.Dock="Top" Content="{Binding}" ContentTemplate="{StaticResource TabStatus}" />
+            <DataGrid ItemsSource="{Binding Entries}">
+                <DataGrid.Columns>
+                    <DataGridTextColumn Header="Когда" Binding="{Binding DateText}" Width="Auto" />
+                    <DataGridTextColumn Header="Кто" Binding="{Binding User}" Width="Auto" />
+                    <DataGridTextColumn Header="Действие" Binding="{Binding ActionText}" Width="Auto" />
+                    <DataGridTextColumn Header="Версия" Binding="{Binding VersionText}" Width="Auto" />
+                    <DataGridTextColumn Header="Подробности" Binding="{Binding DetailsText}" Width="*" />
+                </DataGrid.Columns>
+            </DataGrid>
+        </DockPanel>
+    </DataTemplate>
+</ResourceDictionary>

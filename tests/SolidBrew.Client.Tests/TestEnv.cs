@@ -22,7 +22,7 @@ public sealed class TestEnv : IDisposable
         Project = Server.AddProject("Изделие АБВ");
         Registry.Register(new TestCadAdapter());
         Factory = new FakeClientFactory(this);
-        Services = new AppServices(Dialogs, Shell, Profiles, Factory);
+        Services = new AppServices(Dialogs, Shell, Profiles, Factory) { ProductsRoot = System.IO.Path.Combine(Root, "PDM") };
     }
 
     public string Root { get; }

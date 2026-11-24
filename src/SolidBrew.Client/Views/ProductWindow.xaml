@@ -1,0 +1,386 @@
+<Window x:Class="SolidBrew.Client.Views.ProductWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="clr-namespace:SolidBrew.Client.ViewModels"
+        xmlns:v="clr-namespace:SolidBrew.Client.Views"
+        xmlns:inf="clr-namespace:SolidBrew.Client.Infrastructure"
+        x:Name="Root"
+        Style="{StaticResource AppWindow}"
+        Title="{Binding WindowTitle}" Width="1380" Height="860" MinWidth="900" MinHeight="560" WindowStartupLocation="CenterScreen">
+    <Window.InputBindings>
+        <KeyBinding Key="F5" Command="{Binding RefreshCommand}" />
+    </Window.InputBindings>
+    <Window.Resources>
+        <ResourceDictionary>
+            <ResourceDictionary.MergedDictionaries>
+                <ResourceDictionary Source="NodeTabViews.xaml" />
+            </ResourceDictionary.MergedDictionaries>
+
+            <CollectionViewSource x:Key="SwitcherItems" Source="{Binding Switcher.Items}">
+                <CollectionViewSource.GroupDescriptions>
+                    <PropertyGroupDescription PropertyName="Group" />
+                </CollectionViewSource.GroupDescriptions>
+            </CollectionViewSource>
+
+            <Style TargetType="ToggleButton" x:Key="FlatToggle">
+                <Setter Property="Template" Value="{StaticResource ButtonTemplate}" />
+                <Setter Property="Background" Value="Transparent" />
+                <Setter Property="BorderBrush" Value="Transparent" />
+                <Setter Property="BorderThickness" Value="1" />
+                <Setter Property="Padding" Value="8,4" />
+                <Setter Property="Cursor" Value="Hand" />
+            </Style>
+
+            <!-- Узел дерева изделия: значок, обозначение, наименование, метка состояния (только если не «свободен»). -->
+            <HierarchicalDataTemplate DataType="{x:Type vm:ProductNodeViewModel}" ItemsSource="{Binding Children}">
+                <StackPanel Orientation="Horizontal" Margin="0,3" ToolTip="{Binding ToolTip}" ToolTipService.InitialShowDelay="700">
+                    <TextBlock x:Name="Glyph" Style="{StaticResource Icon}" Text="{Binding Glyph}" Foreground="{StaticResource MutedBrush}" Margin="0,0,7,0" />
+                    <Border x:Name="Hl" CornerRadius="2" Padding="2,0">
+                        <TextBlock x:Name="TitleText" Text="{Binding Title}" />
+                    </Border>
+                    <TextBlock Text="{Binding Subtitle}" Foreground="{StaticResource MutedBrush}" Margin="6,0,0,0" />
+                    <StackPanel Orientation="Horizontal" Margin="10,0,0,0" Visibility="{Binding HasState, Converter={StaticResource BoolVis}}">
+                        <Ellipse Width="8" Height="8" Fill="{Binding Mark, Converter={StaticResource MarkBrush}}" Margin="0,0,5,0" VerticalAlignment="Center" />
+                        <TextBlock Text="{Binding StateText}" FontSize="12" Foreground="{StaticResource MutedBrush}" VerticalAlignment="Center" />
+                    </StackPanel>
+                </StackPanel>
+                <HierarchicalDataTemplate.Triggers>
+                    <DataTrigger Binding="{Binding IsMatch}" Value="True">
+                        <Setter TargetName="Hl" Property="Background" Value="{StaticResource MatchBrush}" />
+                    </DataTrigger>
+                    <DataTrigger Binding="{Binding IsGroup}" Value="True">
+                        <Setter TargetName="TitleText" Property="FontWeight" Value="SemiBold" />
+                        <Setter TargetName="Glyph" Property="Foreground" Value="#7B1FA2" />
+                    </DataTrigger>
+                    <DataTrigger Binding="{Binding Type}" Value="Draft">
+                        <Setter TargetName="Glyph" Property="Foreground" Value="#7B1FA2" />
+                    </DataTrigger>
+                </HierarchicalDataTemplate.Triggers>
+            </HierarchicalDataTemplate>
+
+            <ContextMenu x:Key="NodeMenu" ItemsSource="{Binding Panel.MenuActions}" ItemContainerStyle="{StaticResource ActionMenuItem}" />
+        </ResourceDictionary>
+    </Window.Resources>
+
+    <DockPanel>
+        <!-- ============ Верхняя полоса: изделие, версия, папка, «Сдать (N)», меню ============ -->
+        <Border DockPanel.Dock="Top" Style="{StaticResource Toolbar}" Padding="10,8,12,8">
+            <DockPanel>
+                <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center">
+                    <Button Style="{StaticResource PrimaryButton}" Tag="&#xE898;" Content="{Binding CheckinText}" Command="{Binding CheckinAllCommand}"
+                            Visibility="{Binding CanModify, Converter={StaticResource BoolVis}}" Margin="0,0,10,0"
+                            ToolTip="Сдать изменённые взятые документы и новые файлы рабочей папки" />
+                    <TextBlock Text="только просмотр" Foreground="{StaticResource WarningBrush}" VerticalAlignment="Center" Margin="0,0,10,0"
+                               Visibility="{Binding IsReader, Converter={StaticResource BoolVis}}" ToolTip="Роль «читатель»: только просмотр и выгрузка" />
+                    <Button Style="{StaticResource GlyphButton}" Content="&#xE72C;" Command="{Binding RefreshCommand}" ToolTip="Обновить (F5)" />
+                    <Button Style="{StaticResource GlyphButton}" Content="&#xE712;" ToolTip="Ещё" Margin="2,0,0,0">
+                        <inf:DropDown.Menu>
+                            <ContextMenu>
+                                <MenuItem Header="{Binding UserText}" IsEnabled="False" />
+                                <Separator />
+                                <MenuItem Header="Выгрузить комплект…" Command="{Binding ExportCommand}">
+                                    <MenuItem.Icon><TextBlock Style="{StaticResource Icon}" Text="&#xE7B8;" /></MenuItem.Icon>
+                                </MenuItem>
+                                <MenuItem Header="Поставить на учёт…" Command="{Binding ImportCommand}" Visibility="{Binding CanModify, Converter={StaticResource BoolVis}}">
+                                    <MenuItem.Icon><TextBlock Style="{StaticResource Icon}" Text="&#xE8B5;" /></MenuItem.Icon>
+                                </MenuItem>
+                                <MenuItem Header="Другое изделие…" Command="{Binding ChangeProductCommand}">
+                                    <MenuItem.Icon><TextBlock Style="{StaticResource Icon}" Text="&#xE8F1;" /></MenuItem.Icon>
+                                </MenuItem>
+                                <MenuItem Header="Новое окно" Command="{Binding NewWindowCommand}">
+                                    <MenuItem.Icon><TextBlock Style="{StaticResource Icon}" Text="&#xE8A7;" /></MenuItem.Icon>
+                                </MenuItem>
+                                <Separator />
+                                <MenuItem Header="Администрирование…" Command="{Binding OpenAdminCommand}" Visibility="{Binding IsAdmin, Converter={StaticResource BoolVis}}">
+                                    <MenuItem.Icon><TextBlock Style="{StaticResource Icon}" Text="&#xE716;" /></MenuItem.Icon>
+                                </MenuItem>
+                                <MenuItem Header="Настройки…" Command="{Binding OpenSettingsCommand}">
+                                    <MenuItem.Icon><TextBlock Style="{StaticResource Icon}" Text="&#xE713;" /></MenuItem.Icon>
+                                </MenuItem>
+                                <MenuItem Header="Выйти" Command="{Binding LogoutCommand}">
+                                    <MenuItem.Icon><TextBlock Style="{StaticResource Icon}" Text="&#xE7E8;" /></MenuItem.Icon>
+                                </MenuItem>
+                            </ContextMenu>
+                        </inf:DropDown.Menu>
+                    </Button>
+                </StackPanel>
+
+                <StackPanel Orientation="Horizontal">
+                    <!-- Переключатель изделия -->
+                    <ToggleButton x:Name="SwitcherButton" Style="{StaticResource FlatToggle}" IsChecked="{Binding IsSwitcherOpen}" AutomationProperties.Name="Сменить изделие"
+                                  ToolTip="Сменить изделие: закреплённые, недавние, поиск по всем сборкам">
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock Style="{StaticResource Icon}" Text="&#xE8F1;" FontSize="20" Foreground="{StaticResource AccentBrush}" Margin="0,0,10,0" />
+                            <TextBlock Text="{Binding ProductTitle}" FontSize="18" FontWeight="SemiBold" VerticalAlignment="Center" />
+                            <TextBlock Text="{Binding ProductSubtitle}" FontSize="16" Foreground="{StaticResource MutedBrush}" Margin="10,0,0,0" VerticalAlignment="Center"
+                                       MaxWidth="420" TextTrimming="CharacterEllipsis" />
+                            <TextBlock Style="{StaticResource Icon}" Text="&#xE70D;" FontSize="10" Margin="10,2,0,0" Foreground="{StaticResource MutedBrush}" />
+                        </StackPanel>
+                    </ToggleButton>
+                    <Popup IsOpen="{Binding IsSwitcherOpen}" PlacementTarget="{Binding ElementName=SwitcherButton}" Placement="Bottom"
+                           StaysOpen="False" AllowsTransparency="True" Opened="OnSwitcherOpened">
+                        <Border Background="White" BorderBrush="{StaticResource BorderBrush}" BorderThickness="1" CornerRadius="6"
+                                Padding="8" Width="480" Margin="0,4,10,10">
+                            <Border.Effect>
+                                <DropShadowEffect BlurRadius="14" ShadowDepth="3" Opacity="0.18" />
+                            </Border.Effect>
+                            <DockPanel>
+                                <Grid DockPanel.Dock="Top" Margin="0,0,0,6">
+                                    <TextBox x:Name="SwitcherSearch" Text="{Binding Switcher.Query, UpdateSourceTrigger=PropertyChanged}" Padding="26,4,6,4" />
+                                    <TextBlock Style="{StaticResource Icon}" Text="&#xE721;" Margin="8,0,0,0" Foreground="{StaticResource MutedBrush}" IsHitTestVisible="False" />
+                                    <TextBlock Text="Поиск по всем сборкам: обозначение, наименование, файл" Margin="28,0,0,0" VerticalAlignment="Center"
+                                               Foreground="{StaticResource MutedBrush}" IsHitTestVisible="False"
+                                               Visibility="{Binding Switcher.Query, Converter={StaticResource NullVis}, ConverterParameter=invert}" />
+                                </Grid>
+                                <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" Margin="0,6,0,0">
+                                    <Button Style="{StaticResource FlatButton}" Tag="&#xE8F1;" Content="Все изделия…" Command="{Binding ChangeProductCommand}" />
+                                    <Button Style="{StaticResource FlatButton}" Tag="&#xE8A7;" Content="Новое окно" Command="{Binding NewWindowCommand}" />
+                                </StackPanel>
+                                <TextBlock DockPanel.Dock="Bottom" Text="{Binding Switcher.StatusText}" Style="{StaticResource Muted}" Margin="4,4,0,0"
+                                           Visibility="{Binding Switcher.StatusText, Converter={StaticResource NullVis}}" />
+                                <ScrollViewer MaxHeight="430" VerticalScrollBarVisibility="Auto">
+                                    <ItemsControl ItemsSource="{Binding Source={StaticResource SwitcherItems}}">
+                                        <ItemsControl.GroupStyle>
+                                            <GroupStyle>
+                                                <GroupStyle.HeaderTemplate>
+                                                    <DataTemplate>
+                                                        <TextBlock Text="{Binding Name}" Foreground="{StaticResource MutedBrush}" FontSize="12" Margin="8,8,0,2" />
+                                                    </DataTemplate>
+                                                </GroupStyle.HeaderTemplate>
+                                            </GroupStyle>
+                                        </ItemsControl.GroupStyle>
+                                        <ItemsControl.ItemTemplate>
+                                            <DataTemplate DataType="{x:Type vm:ProductItem}">
+                                                <DockPanel>
+                                                    <Button DockPanel.Dock="Right" Style="{StaticResource GlyphButton}" Content="&#xE8A7;" ToolTip="Открыть в новом окне"
+                                                            Command="{Binding DataContext.OpenItemInNewWindowCommand, ElementName=Root}" CommandParameter="{Binding}" />
+                                                    <Button DockPanel.Dock="Right" Style="{StaticResource GlyphButton}" ToolTip="Закрепить / открепить" Content="{Binding PinGlyph}"
+                                                            Command="{Binding DataContext.Switcher.TogglePinCommand, ElementName=Root}" CommandParameter="{Binding}" />
+                                                    <Button Style="{StaticResource FlatButton}" HorizontalContentAlignment="Stretch" AutomationProperties.Name="{Binding Title}" Padding="8,5"
+                                                            Command="{Binding DataContext.SwitchToCommand, ElementName=Root}" CommandParameter="{Binding}">
+                                                        <Button.ContentTemplate>
+                                                            <DataTemplate>
+                                                                <ContentPresenter Content="{Binding}" />
+                                                            </DataTemplate>
+                                                        </Button.ContentTemplate>
+                                                        <StackPanel>
+                                                            <StackPanel Orientation="Horizontal">
+                                                                <TextBlock Text="{Binding Title}" FontWeight="SemiBold" />
+                                                                <TextBlock Text="{Binding Subtitle}" Margin="8,0,0,0" Foreground="{StaticResource MutedBrush}" TextTrimming="CharacterEllipsis" MaxWidth="260" />
+                                                            </StackPanel>
+                                                            <TextBlock Text="{Binding Details}" FontSize="11" Foreground="{StaticResource MutedBrush}" TextTrimming="CharacterEllipsis"
+                                                                       Visibility="{Binding Details, Converter={StaticResource NullVis}}" />
+                                                        </StackPanel>
+                                                    </Button>
+                                                </DockPanel>
+                                            </DataTemplate>
+                                        </ItemsControl.ItemTemplate>
+                                    </ItemsControl>
+                                </ScrollViewer>
+                            </DockPanel>
+                        </Border>
+                    </Popup>
+                    <Button Style="{StaticResource GlyphButton}" Content="{Binding PinGlyph}" Command="{Binding TogglePinCommand}" ToolTip="{Binding PinText}"
+                            Visibility="{Binding HasProduct, Converter={StaticResource BoolVis}}" Margin="4,0,0,0" />
+                    <Button Style="{StaticResource GlyphButton}" Content="&#xE8A7;" Command="{Binding NewWindowCommand}" ToolTip="Открыть другое изделие в новом окне" />
+
+                    <StackPanel VerticalAlignment="Center" Margin="14,0,0,0" Visibility="{Binding HasProduct, Converter={StaticResource BoolVis}}">
+                        <TextBlock FontSize="12" Foreground="{StaticResource MutedBrush}">
+                            <Run Text="В рабочей папке" /> <Run Text="{Binding ProductVersionText, Mode=OneWay}" Foreground="{StaticResource TextBrush}" />
+                        </TextBlock>
+                        <Button Style="{StaticResource LinkButton}" Command="{Binding ShowWorkRootCommand}" ToolTip="Открыть рабочую папку в Проводнике">
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock Style="{StaticResource Icon}" Text="&#xE8B7;" FontSize="12" Margin="0,0,5,0" />
+                                <TextBlock Text="{Binding WorkRootText}" FontSize="12" TextTrimming="CharacterEllipsis" MaxWidth="420" />
+                            </StackPanel>
+                        </Button>
+                    </StackPanel>
+                </StackPanel>
+            </DockPanel>
+        </Border>
+
+        <!-- Уведомления (например, принудительно снятая блокировка) — неброская полоса. -->
+        <Border DockPanel.Dock="Top" Background="{StaticResource NoticeBrush}" BorderBrush="#F0E2B6" BorderThickness="0,0,0,1" Padding="14,5"
+                Visibility="{Binding HasNotices, Converter={StaticResource BoolVis}}">
+            <DockPanel>
+                <Button DockPanel.Dock="Right" Style="{StaticResource FlatButton}" Content="Скрыть" Command="{Binding DismissNoticesCommand}" Padding="8,0" MinHeight="22" />
+                <TextBlock DockPanel.Dock="Left" Style="{StaticResource Icon}" Text="&#xEA8F;" Foreground="{StaticResource WarningBrush}" Margin="0,0,8,0" />
+                <ToggleButton DockPanel.Dock="Right" x:Name="NoticesMore" Style="{StaticResource PillToggle}" Margin="8,0,0,0" VerticalAlignment="Center"
+                              Visibility="{Binding HasMoreNotices, Converter={StaticResource BoolVis}}" Content="{Binding MoreNoticesText}" />
+                <Grid VerticalAlignment="Center">
+                    <TextBlock Text="{Binding FirstNotice}" TextTrimming="CharacterEllipsis" ToolTip="{Binding FirstNotice}"
+                               Visibility="{Binding IsChecked, ElementName=NoticesMore, Converter={StaticResource BoolVis}, ConverterParameter=invert}" />
+                    <ScrollViewer MaxHeight="160" VerticalScrollBarVisibility="Auto"
+                                  Visibility="{Binding IsChecked, ElementName=NoticesMore, Converter={StaticResource BoolVis}}">
+                        <ItemsControl ItemsSource="{Binding Notices}">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <TextBlock Text="{Binding}" TextWrapping="Wrap" Margin="0,1" />
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                    </ScrollViewer>
+                </Grid>
+            </DockPanel>
+        </Border>
+
+        <!-- Строка состояния -->
+        <Border DockPanel.Dock="Bottom" BorderBrush="{StaticResource BorderBrush}" BorderThickness="0,1,0,0" Padding="12,2">
+            <v:BusyBar DataContext="{Binding Busy}" />
+        </Border>
+
+        <Grid>
+            <!-- Изделие не выбрано -->
+            <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center" MaxWidth="520"
+                        Visibility="{Binding HasProduct, Converter={StaticResource BoolVis}, ConverterParameter=invert}">
+                <TextBlock Style="{StaticResource Icon}" Text="&#xE8F1;" FontSize="40" Foreground="{StaticResource MutedBrush}" HorizontalAlignment="Center" />
+                <TextBlock Text="{Binding EmptyText}" Style="{StaticResource Header}" HorizontalAlignment="Center" TextAlignment="Center" Margin="0,12,0,12" />
+                <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
+                    <Button Style="{StaticResource PrimaryButton}" Tag="&#xE8F1;" Content="Выбрать изделие…" Command="{Binding ChangeProductCommand}" />
+                    <Button Style="{StaticResource IconButton}" Tag="&#xE8B5;" Content="Поставить на учёт новое изделие" Command="{Binding ImportCommand}"
+                            Visibility="{Binding CanModify, Converter={StaticResource BoolVis}}" />
+                </StackPanel>
+            </StackPanel>
+
+            <Grid Visibility="{Binding HasProduct, Converter={StaticResource BoolVis}}">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="430" MinWidth="260" />
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="*" MinWidth="380" />
+                </Grid.ColumnDefinitions>
+
+                <!-- ============ Дерево изделия ============ -->
+                <DockPanel Background="{StaticResource PanelBrush}">
+                    <Grid DockPanel.Dock="Top" Margin="12,12,12,8">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <TextBox x:Name="FilterBox" Text="{Binding Tree.FilterText, UpdateSourceTrigger=PropertyChanged}" Padding="26,4,26,4"
+                                 ToolTip="Фильтр (Ctrl+F): подстрока обозначения, наименования или имени файла" />
+                        <TextBlock Style="{StaticResource Icon}" Text="&#xE71C;" Margin="8,0,0,0" Foreground="{StaticResource MutedBrush}" IsHitTestVisible="False" />
+                        <TextBlock Text="Фильтр" Margin="28,0,0,0" VerticalAlignment="Center" Foreground="{StaticResource MutedBrush}" IsHitTestVisible="False"
+                                   Visibility="{Binding Tree.FilterText, Converter={StaticResource NullVis}, ConverterParameter=invert}" />
+                        <Button Style="{StaticResource GlyphButton}" Content="&#xE711;" HorizontalAlignment="Right" Padding="6,2" Margin="0,0,2,0"
+                                Command="{Binding Tree.ClearFilterCommand}" ToolTip="Сбросить фильтр и отборы"
+                                Visibility="{Binding Tree.IsFiltered, Converter={StaticResource BoolVis}}" />
+                        <TextBlock Grid.Column="1" Style="{StaticResource Icon}" Text="&#xE946;" Foreground="{StaticResource MutedBrush}" Margin="8,0,0,0"
+                                   ToolTipService.InitialShowDelay="100" ToolTipService.ShowDuration="30000">
+                            <TextBlock.ToolTip>
+                                <StackPanel Margin="2">
+                                    <TextBlock Text="Метки состояния" FontWeight="SemiBold" Margin="0,0,0,4" />
+                                    <ItemsControl ItemsSource="{x:Static inf:Legend.Items}" ItemTemplate="{StaticResource LegendItem}" />
+                                    <TextBlock Text="Свободный документ без правок — без метки." Foreground="{StaticResource MutedBrush}" Margin="0,4,0,0" />
+                                </StackPanel>
+                            </TextBlock.ToolTip>
+                        </TextBlock>
+                    </Grid>
+                    <WrapPanel DockPanel.Dock="Top" Margin="12,0,12,4">
+                        <ToggleButton Style="{StaticResource PillToggle}" IsChecked="{Binding Tree.ShowMine}" ToolTip="Документы, взятые мной в работу">
+                            <TextBlock><Run Text="Взятые мной" /> <Run Text="{Binding Tree.MineCount, Mode=OneWay}" Foreground="{StaticResource MutedBrush}" /></TextBlock>
+                        </ToggleButton>
+                        <ToggleButton Style="{StaticResource PillToggle}" IsChecked="{Binding Tree.ShowModified}" ToolTip="Изменённые документы и новые файлы">
+                            <TextBlock><Run Text="Изменённые" /> <Run Text="{Binding Tree.ModifiedCount, Mode=OneWay}" Foreground="{StaticResource MutedBrush}" /></TextBlock>
+                        </ToggleButton>
+                        <ToggleButton Style="{StaticResource PillToggle}" IsChecked="{Binding Tree.ShowOutdated}" ToolTip="Есть новая версия на сервере">
+                            <TextBlock><Run Text="Устаревшие" /> <Run Text="{Binding Tree.OutdatedCount, Mode=OneWay}" Foreground="{StaticResource MutedBrush}" /></TextBlock>
+                        </ToggleButton>
+                        <ToggleButton Style="{StaticResource PillToggle}" IsChecked="{Binding Tree.ShowProblems}"
+                                      ToolTip="Нет файла, ссылка не учтена, правка без взятия, чертёж с другой версией модели">
+                            <TextBlock><Run Text="Проблемы" /> <Run Text="{Binding Tree.ProblemCount, Mode=OneWay}" Foreground="{StaticResource MutedBrush}" /></TextBlock>
+                        </ToggleButton>
+                    </WrapPanel>
+                    <TextBlock DockPanel.Dock="Top" Text="Ничего не найдено." Style="{StaticResource Muted}" Margin="16,6"
+                               Visibility="{Binding Tree.HasNoMatches, Converter={StaticResource BoolVis}}" />
+                    <TreeView x:Name="NodeTree" ItemsSource="{Binding Tree.Roots}" BorderThickness="0" Background="{StaticResource PanelBrush}" Padding="6,0,0,6"
+                              VirtualizingPanel.IsVirtualizing="True" VirtualizingPanel.VirtualizationMode="Recycling" ScrollViewer.CanContentScroll="True"
+                              ContextMenu="{StaticResource NodeMenu}" PreviewMouseRightButtonDown="OnTreeRightButtonDown">
+                        <TreeView.Resources>
+                            <SolidColorBrush x:Key="{x:Static SystemColors.HighlightBrushKey}" Color="#DCE8F6" />
+                            <SolidColorBrush x:Key="{x:Static SystemColors.HighlightTextBrushKey}" Color="#1F2328" />
+                            <SolidColorBrush x:Key="{x:Static SystemColors.InactiveSelectionHighlightBrushKey}" Color="#E6EAF0" />
+                            <SolidColorBrush x:Key="{x:Static SystemColors.InactiveSelectionHighlightTextBrushKey}" Color="#1F2328" />
+                        </TreeView.Resources>
+                        <TreeView.ItemContainerStyle>
+                            <Style TargetType="TreeViewItem">
+                                <Setter Property="IsExpanded" Value="{Binding IsExpanded, Mode=TwoWay}" />
+                                <Setter Property="IsSelected" Value="{Binding IsSelected, Mode=TwoWay}" />
+                                <Setter Property="Visibility" Value="{Binding IsVisible, Converter={StaticResource BoolVis}}" />
+                                <Setter Property="Padding" Value="2,0" />
+                            </Style>
+                        </TreeView.ItemContainerStyle>
+                    </TreeView>
+                </DockPanel>
+
+                <GridSplitter Grid.Column="1" Width="1" Background="{StaticResource BorderBrush}" HorizontalAlignment="Stretch" ResizeBehavior="PreviousAndNext" />
+
+                <!-- ============ Панель узла ============ -->
+                <Grid Grid.Column="2" Margin="22,16,20,10" DataContext="{Binding Panel}">
+                    <TextBlock Text="Выберите документ в дереве." Style="{StaticResource Muted}" HorizontalAlignment="Center" VerticalAlignment="Center"
+                               Visibility="{Binding HasNode, Converter={StaticResource BoolVis}, ConverterParameter=invert}" />
+                    <DockPanel Visibility="{Binding HasNode, Converter={StaticResource BoolVis}}">
+                        <!-- Шапка узла -->
+                        <DockPanel DockPanel.Dock="Top">
+                            <TextBlock DockPanel.Dock="Left" Style="{StaticResource Icon}" Text="{Binding Node.Glyph}" FontSize="30"
+                                       Foreground="{StaticResource AccentBrush}" VerticalAlignment="Top" Margin="0,4,14,0" />
+                            <StackPanel>
+                                <TextBlock Text="{Binding Node.Title}" Style="{StaticResource Title}" />
+                                <TextBlock Text="{Binding Node.Name}" FontSize="15" Foreground="{StaticResource MutedBrush}" TextWrapping="Wrap"
+                                           Visibility="{Binding Node.Name, Converter={StaticResource NullVis}}" />
+                                <WrapPanel Margin="0,6,0,0">
+                                    <TextBlock Text="{Binding Node.KindText}" Foreground="{StaticResource MutedBrush}" />
+                                    <TextBlock Text="{Binding Node.VersionText}" Margin="14,0,0,0" Visibility="{Binding Node.VersionText, Converter={StaticResource NullVis}}" />
+                                    <StackPanel Orientation="Horizontal" Margin="14,0,0,0" Visibility="{Binding Node.FullStateText, Converter={StaticResource NullVis}}">
+                                        <Ellipse Width="9" Height="9" Fill="{Binding Node.Mark, Converter={StaticResource MarkBrush}}" Margin="0,0,6,0" VerticalAlignment="Center" />
+                                        <TextBlock Text="{Binding Node.FullStateText}" TextWrapping="Wrap" />
+                                    </StackPanel>
+                                </WrapPanel>
+                                <TextBlock Text="{Binding Node.LockText}" Foreground="{StaticResource MutedBrush}" Margin="0,2,0,0"
+                                           Visibility="{Binding Node.LockText, Converter={StaticResource NullVis}}" />
+                                <TextBlock Text="{Binding Node.FileName}" Foreground="{StaticResource MutedBrush}" FontSize="12" Margin="0,2,0,0" />
+                            </StackPanel>
+                        </DockPanel>
+
+                        <!-- Действия: только применимые; остальное — в «⋯» -->
+                        <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,14,0,14">
+                            <ItemsControl ItemsSource="{Binding PrimaryActions}">
+                                <ItemsControl.ItemsPanel>
+                                    <ItemsPanelTemplate>
+                                        <StackPanel Orientation="Horizontal" />
+                                    </ItemsPanelTemplate>
+                                </ItemsControl.ItemsPanel>
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate DataType="{x:Type vm:NodeAction}">
+                                        <Button Style="{StaticResource IconButton}" Tag="{Binding Glyph}" Content="{Binding Text}" Command="{Binding Command}"
+                                                ToolTip="{Binding ToolTip}" Margin="0,0,8,0" />
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                            <Button Style="{StaticResource GlyphButton}" Content="&#xE712;" ToolTip="Другие действия"
+                                    Visibility="{Binding HasMore, Converter={StaticResource BoolVis}}">
+                                <inf:DropDown.Menu>
+                                    <ContextMenu ItemsSource="{Binding MoreActions}" ItemContainerStyle="{StaticResource ActionMenuItem}" />
+                                </inf:DropDown.Menu>
+                            </Button>
+                        </StackPanel>
+
+                        <!-- Вкладки (набор зависит от типа узла) -->
+                        <TabControl Style="{StaticResource FlatTabs}" ItemsSource="{Binding Tabs}" SelectedItem="{Binding SelectedTab}"
+                                    Visibility="{Binding HasTabs, Converter={StaticResource BoolVis}}">
+                            <TabControl.ItemTemplate>
+                                <DataTemplate DataType="{x:Type vm:NodeTabItem}">
+                                    <TextBlock Text="{Binding Header}" />
+                                </DataTemplate>
+                            </TabControl.ItemTemplate>
+                            <TabControl.ContentTemplate>
+                                <DataTemplate DataType="{x:Type vm:NodeTabItem}">
+                                    <ContentPresenter Content="{Binding Content}" />
+                                </DataTemplate>
+                            </TabControl.ContentTemplate>
+                        </TabControl>
+                    </DockPanel>
+                </Grid>
+            </Grid>
+        </Grid>
+    </DockPanel>
+</Window>
