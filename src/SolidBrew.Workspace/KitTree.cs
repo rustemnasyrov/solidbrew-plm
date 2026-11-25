@@ -44,6 +44,8 @@ public sealed class KitTreeNode
     public List<Guid> DrawsDocumentIds { get; init; } = new();
     /// <summary>Чертёж сдан с другой версией модели, чем в комплекте.</summary>
     public bool DrawingModelVersionMismatch { get; init; }
+    /// <summary>Для чертежа: на какие версии моделей он ссылается (документ → версия).</summary>
+    public Dictionary<Guid, int> DrawnVersions { get; init; } = new();
     public bool IsOutdated => !IsUnresolved && Version < LatestVersion;
     public List<KitTreeNode> Children { get; } = new();
 
@@ -142,6 +144,9 @@ public static class KitTreeBuilder
                 DrawsDocumentId = draws?.FirstOrDefault(),
                 DrawsDocumentIds = draws ?? new List<Guid>(),
                 DrawingModelVersionMismatch = it.DrawingModelVersionMismatch,
+                DrawnVersions = it.Kind == DocumentKind.Drawing && children.TryGetValue((it.DocumentId, it.Version), out var drawn)
+                    ? drawn.GroupBy(e => e.ChildDocumentId).ToDictionary(g => g.Key, g => g.Max(e => e.ChildVersion))
+                    : new Dictionary<Guid, int>(),
             };
             if (cycle) return node;
 

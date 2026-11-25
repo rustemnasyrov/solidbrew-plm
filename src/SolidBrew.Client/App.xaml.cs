@@ -8,7 +8,7 @@ using SolidBrew.Core.Contracts;
 namespace SolidBrew.Client;
 
 /// <summary>
-/// Точка входа: вход → окно последнего изделия (или стартовое окно выбора изделия) → «Выйти» возвращает ко входу.
+/// Точка входа: вход → главное окно (все изделия в дереве, последнее открытое раскрыто) → «Выйти» возвращает ко входу.
 /// Окон изделий может быть несколько («Открыть в новом окне»); приложение закрывается с последним.
 /// </summary>
 public partial class App : Application
@@ -84,29 +84,21 @@ public partial class App : Application
         public ProductWindows(AppSession session) => _session = session;
 
         /// <summary>true — выход (показать вход снова), false — все окна закрыты.</summary>
+        /// <summary>
+        /// Сразу главное окно: в дереве все изделия, последнее открытое (если его папка на месте) — раскрыто.
+        /// Отдельного окна выбора изделия нет.
+        /// </summary>
         public async Task<bool> RunAsync(IEnumerable<NotificationDto>? notifications)
         {
-            var first = ProductFolders.LastProduct(_session.Profile) ?? AskProduct();
-            if (first == null) return false;
-            await OpenWindowAsync(first, notifications);
+            await OpenWindowAsync(ProductFolders.LastProduct(_session.Profile), notifications);
             return await _done.Task;
-        }
-
-        private ProductRef? AskProduct()
-        {
-            var start = new StartViewModel(_session);
-            return _session.Services.Dialogs.ShowDialog(start) == true ? start.Choice : null;
         }
 
         private async Task OpenWindowAsync(ProductRef? product, IEnumerable<NotificationDto>? notifications)
         {
             var vm = new ProductWindowViewModel(_session, NodeTabRegistry.CreateDefault(), notifications);
             var window = new ProductWindow { DataContext = vm };
-            vm.NewWindowRequested += async (_, p) =>
-            {
-                var target = p ?? AskProduct();
-                if (target != null) await OpenWindowAsync(target, null);
-            };
+            vm.NewWindowRequested += async (_, p) => await OpenWindowAsync(p, null);
             vm.LogoutRequested += (_, _) =>
             {
                 _logout = true;
@@ -115,6 +107,7 @@ public partial class App : Application
             };
             window.Closed += (_, _) =>
             {
+                vm.Dispose();
                 _windows.Remove(window);
                 if (_windows.Count == 0) _done.TrySetResult(_logout);
                 else if (ReferenceEquals(Current.MainWindow, window)) Current.MainWindow = _windows[0];
@@ -129,7 +122,7 @@ public partial class App : Application
                 window.Top = prev.Top + 40;
             }
             window.Show();
-            await vm.OpenProductAsync(product);
+            await vm.StartAsync(product);
         }
     }
 }

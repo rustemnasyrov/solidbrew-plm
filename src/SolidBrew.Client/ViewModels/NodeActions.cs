@@ -18,6 +18,16 @@ public enum NodeActionKind
     ShowInExplorer,
     OpenAsProduct,
     OpenAsProductInNewWindow,
+    /// <summary>Файл, оставленный ссылкой: поставить на учёт и привязать ссылку родителя к новому документу.</summary>
+    RegisterLinked,
+    /// <summary>Ссылка на файл, не учтённый в PDM: указать файл модели, поставить его на учёт и привязать к нему ссылку.</summary>
+    RegisterLinkedPick,
+    /// <summary>Выбрать сборку SOLIDWORKS и поставить её на учёт новым изделием.</summary>
+    AddProject,
+    /// <summary>Развернуть узел со всеми вложенными.</summary>
+    ExpandBranch,
+    /// <summary>Свернуть узел со всеми вложенными.</summary>
+    CollapseBranch,
 }
 
 /// <summary>Кнопка или пункт меню действия.</summary>
@@ -39,7 +49,42 @@ public static class NodeActionRules
     {
         var primary = new List<NodeActionKind>();
         var more = new List<NodeActionKind>();
-        if (node == null || node.Type is NodeType.Group or NodeType.Unresolved) return (primary, more);
+        if (node == null || node.Type is NodeType.Group)
+        {
+            // Правый щелчок по пустому месту дерева или по «Новые файлы».
+            if (canModify) more.Add(NodeActionKind.AddProject);
+            return (primary, more);
+        }
+
+        if (node.IsProductStub)
+        {
+            // Неоткрытое изделие верхнего уровня.
+            primary.Add(NodeActionKind.OpenAsProduct);
+            more.Add(NodeActionKind.OpenAsProductInNewWindow);
+            if (canModify) more.Add(NodeActionKind.AddProject);
+            return (primary, more);
+        }
+
+        if (node.Type == NodeType.Unresolved)
+        {
+            // Файл не в PDM: открыть по ссылке; поставить на учёт — дальше он обычный документ (взять в работу, сдать…).
+            if (node.LinkPath != null) primary.Add(NodeActionKind.OpenInCad);
+            if (canModify && node.ParentDocument != null)
+            {
+                // Файл по ссылке есть — ставится он; нет (или нужен другой) — файл указывает пользователь.
+                if (node.LinkPath != null)
+                {
+                    primary.Add(NodeActionKind.RegisterLinked);
+                    more.Add(NodeActionKind.RegisterLinkedPick);
+                }
+                else
+                {
+                    primary.Add(NodeActionKind.RegisterLinkedPick);
+                }
+            }
+            if (node.LinkPath != null) more.Add(NodeActionKind.ShowInExplorer);
+            return (primary, more);
+        }
 
         if (node.IsDraft)
         {
@@ -79,6 +124,12 @@ public static class NodeActionRules
             more.Add(NodeActionKind.OpenAsProduct);
             more.Add(NodeActionKind.OpenAsProductInNewWindow);
         }
+        if (node.Children.Count > 0)
+        {
+            more.Add(NodeActionKind.ExpandBranch);
+            more.Add(NodeActionKind.CollapseBranch);
+        }
+        if (canModify && isProductRoot) more.Add(NodeActionKind.AddProject);
 
         // Не больше MaxPrimary кнопок: лишнее уходит в «⋯».
         while (primary.Count > MaxPrimary)
@@ -103,6 +154,11 @@ public static class NodeActionRules
         NodeActionKind.ShowInExplorer => "Показать в Проводнике",
         NodeActionKind.OpenAsProduct => "Открыть как изделие",
         NodeActionKind.OpenAsProductInNewWindow => "Открыть как изделие в новом окне",
+        NodeActionKind.RegisterLinked => "Поставить на учёт…",
+        NodeActionKind.RegisterLinkedPick => "Выбрать файл и поставить на учёт…",
+        NodeActionKind.AddProject => "Добавить проект…",
+        NodeActionKind.ExpandBranch => "Развернуть ветку",
+        NodeActionKind.CollapseBranch => "Свернуть ветку",
         _ => kind.ToString(),
     };
 
@@ -131,6 +187,11 @@ public static class NodeActionRules
         NodeActionKind.UndoCheckOut => "Снять свою блокировку без публикации",
         NodeActionKind.UpdateToLatest => "Положить в рабочую папку последнюю версию (с её комплектом)",
         NodeActionKind.OpenAsProduct => "Сделать эту сборку корнем окна (своя рабочая папка)",
+        NodeActionKind.RegisterLinkedPick => "Указать файл этой модели на диске, загрузить его в хранилище и привязать к нему ссылку сборки",
+        NodeActionKind.AddProject => "Выбрать сборку SOLIDWORKS и поставить её на учёт новым изделием",
+        NodeActionKind.ExpandBranch => "Развернуть этот узел со всеми вложенными сборками",
+        NodeActionKind.CollapseBranch => "Свернуть этот узел со всеми вложенными сборками",
+        NodeActionKind.RegisterLinked => "Загрузить файл в PDM и привязать к нему ссылку сборки (новая версия сборки); дальше его можно брать в работу и сдавать",
         _ => null,
     };
 }

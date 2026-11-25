@@ -312,15 +312,58 @@ public sealed partial class WorkflowController : ObservableObject
     /// <summary>
     /// «Поставить на учёт». Возвращает новое изделие, если пользователь выбрал «Открыть» (его открывает окно изделия), иначе null.
     /// </summary>
-    public ProductRef? Import(Guid? preferredProject)
+    /// <param name="headFile">Головной файл (выбран заранее, например «Добавить проект…»): отчёт строится сразу.</param>
+    public ProductRef? Import(Guid? preferredProject, string? headFile = null)
     {
         if (!EnsureCanModify("Поставить на учёт")) return null;
-        var vm = new ImportViewModel(_session, preferredProject);
+        var vm = new ImportViewModel(_session, preferredProject, headFile: headFile);
         var ok = Dialogs.ShowDialog(vm) == true && vm.Result is { Success: true };
         if (!ok) return null;
         Busy.Done(vm.Result!.Message);
         RaiseChanged();
         return vm.OpenAfter ? new ProductRef(vm.Result.HeadDocumentId) : null;
+    }
+
+    /// <summary>
+    /// Файл, оставленный ссылкой (не учтён в PDM): поставить на учёт (рядом с родителем в проекте; уже учтённое содержимое
+    /// берётся из хранилища), привязать к нему ссылку родителя (новая версия родителя) и разложить в рабочую папку.
+    /// Дальше это обычный документ: взять в работу, сдать, обновить.
+    /// </summary>
+    public async Task<bool> RegisterLinkedAsync(Guid parentId, Guid projectId, string parentRelPath, string parentLabel, string refPath, string linkPath)
+    {
+        const string title = "Поставить на учёт";
+        if (!EnsureCanModify(title)) return false;
+        var root = RequireWorkspace(title);
+        if (root == null) return false;
+
+        var slash = parentRelPath.LastIndexOf('/');
+        var prefix = slash > 0 ? parentRelPath.Substring(0, slash) : string.Empty;
+        var vm = new ImportViewModel(_session, projectId, new ImportPreset(linkPath, prefix, parentLabel));
+        if (Dialogs.ShowDialog(vm) != true || vm.Result is not { Success: true } imported) return false;
+
+        var ws = Workspace;
+        var outcome = await Busy.RunAsync("Привязка ссылки", (_, ct) =>
+            ws.BindReferenceAsync(root, parentId, refPath, imported.HeadDocumentId, imported.HeadVersion, ct));
+        if (!outcome.Ok)
+        {
+            RaiseChanged();
+            return false;
+        }
+        var bind = outcome.Value!;
+        if (!bind.Success)
+        {
+            RaiseChanged();
+            Dialogs.ShowError(title, ErrorText.FromProblems(
+                $"Файл поставлен на учёт ({imported.Message}), но ссылка {parentLabel} не привязана: {bind.Message} " +
+                "Повторите «Поставить на учёт» — загружать заново ничего не придётся.", bind.Problems));
+            return false;
+        }
+        Busy.Done(bind.Message);
+        Notices?.Invoke(this, new[] { imported.Message, bind.Message });
+
+        // Разложить: родитель без правок — новой версией (с переписанными ссылками); с правками — только новый документ.
+        await UpdateToLatestAsync(bind.ParentModifiedLocally ? new[] { imported.HeadDocumentId } : new[] { parentId });
+        return true;
     }
 
     // ------------------------------------------------------------------ правки в других рабочих папках

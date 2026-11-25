@@ -77,6 +77,27 @@ public sealed class StorageTests(PdmServerFixture fx)
     }
 
     [Fact]
+    public async Task VersionsByHash_FindsPublishedVersions_UnknownEmpty_BadHash400()
+    {
+        var kit = await CheckinTests.PublishKitAsync(fx);
+        var d = kit.Designer;
+        var detail = await d.GetDocumentAsync(kit.Part1);
+        var sha = detail.Versions.Single(v => v.Number == 1).Sha256;
+        var unknown = Sha(Encoding.UTF8.GetBytes("нет такого " + Guid.NewGuid()));
+
+        var found = await d.FindVersionsByHashAsync([sha, unknown, sha]);
+        var hit = Assert.Single(found, f => f.Document.Id == kit.Part1);
+        Assert.Equal(sha, hit.Sha256);
+        Assert.Equal(1, hit.Version);
+        Assert.Equal(kit.Project.Id, hit.Document.ProjectId);
+        Assert.DoesNotContain(found, f => f.Sha256 == unknown);
+        Assert.Empty(await d.FindVersionsByHashAsync([]));
+
+        var bad = await Assert.ThrowsAsync<PdmApiException>(() => d.FindVersionsByHashAsync(["not-a-hash"]));
+        Assert.Equal(400, bad.StatusCode);
+    }
+
+    [Fact]
     public async Task Kit_OldAssemblyKeepsOldPart_WhereUsedShowsBoth()
     {
         var kit = await CheckinTests.PublishKitAsync(fx);

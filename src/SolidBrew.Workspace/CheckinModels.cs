@@ -30,6 +30,13 @@ public sealed class ResolvedReference
     /// <summary>Для неоднозначной ссылки — все подходящие файлы.</summary>
     public List<string> Candidates { get; init; } = new();
     public bool IsResolved => TargetRelPath != null;
+    /// <summary>
+    /// Файла нет в рабочей папке, но ссылка допустима и сдаётся как есть (не учтена в PDM): она была такой же
+    /// в сданной версии документа или файл лежит по записанному пути вне рабочей папки (CAD откроет его по ссылке).
+    /// </summary>
+    public bool KeepAsLink { get; init; }
+    /// <summary>Файл по записанному пути существует.</summary>
+    public bool LinkFileExists { get; init; }
 }
 
 /// <summary>Кандидат на сдачу: взятый и изменённый документ, взятый неизменённый или черновик.</summary>
@@ -153,6 +160,13 @@ public sealed class CheckinPlan
             {
                 switch (r.Resolution)
                 {
+                    case ReferenceResolution.Missing when r.KeepAsLink:
+                        Problems.Add(new PlanProblem(ProblemSeverity.Info, LocalProblemCodes.ByLink,
+                            r.LinkFileExists
+                                ? $"{label}: «{r.FileName}» не учтён в PDM — ссылка сдаётся как есть, CAD откроет файл по ссылке ({r.SavedPath})."
+                                : $"{label}: ссылка на «{r.FileName}» не учтена в PDM и была такой же в сданной версии — сдаётся как есть.",
+                            c.RelPath, c.DocumentId));
+                        continue;
                     case ReferenceResolution.Missing:
                         Problems.Add(new PlanProblem(ProblemSeverity.Error, LocalProblemCodes.MissingReference,
                             $"{label}: ссылка на «{r.FileName}» ({r.SavedPath}) — файл не найден в рабочей папке. Положите файл в рабочую папку (откройте его из хранилища) или исправьте ссылку в CAD.",

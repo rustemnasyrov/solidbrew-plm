@@ -327,6 +327,8 @@ public sealed class ComponentRow
     public string Title { get; init; } = string.Empty;
     public string Name { get; init; } = string.Empty;
     public string FileName { get; init; } = string.Empty;
+    /// <summary>Файл для системного значка (null — глиф).</summary>
+    public string? IconFile { get; init; }
     public string VersionText { get; init; } = string.Empty;
     public int Count { get; init; }
     public StateMark Mark { get; init; }
@@ -364,6 +366,7 @@ public sealed partial class CompositionTabViewModel : NodeTabViewModel
                 Title = tree?.Designation is { Length: > 0 } d ? d : file,
                 Name = tree?.Name ?? string.Empty,
                 FileName = file,
+                IconFile = file,
                 VersionText = $"v{r.ChildVersion}" + (outdated ? $", есть v{r.ChildLatestVersion}" : string.Empty),
                 Count = g.Count(),
                 Mark = outdated ? StateMark.Outdated : StateMark.None,
@@ -376,14 +379,28 @@ public sealed partial class CompositionTabViewModel : NodeTabViewModel
                 Glyph = Glyphs.Missing,
                 Title = Format.FileName(r.RefPath),
                 FileName = r.RefPath,
+                IconFile = LinkExists(r.RefPath) ? Format.FileName(r.RefPath) : null,
                 Count = 1,
                 Mark = StateMark.Missing,
-                NoteText = "не учтён в PDM",
+                NoteText = LinkExists(r.RefPath) ? "не учтён в PDM, по ссылке" : "не учтён в PDM, файла нет",
             });
         }
         Components.ReplaceWith(rows.OrderBy(r => r.Mark == StateMark.Missing).ThenBy(r => r.Title, StringComparer.CurrentCultureIgnoreCase));
         Summary = $"Компонентов в v{v.Number}: {Components.Count}.";
         if (Components.Count == 0) Message = "Сборка не ссылается на другие документы.";
+    }
+
+    private static bool LinkExists(string refPath)
+    {
+        try
+        {
+            var p = refPath.Replace('/', '\\');
+            return Path.IsPathFullyQualified(p) && File.Exists(p);
+        }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            return false;
+        }
     }
 
     [RelayCommand]
@@ -399,6 +416,8 @@ public sealed class ModelRow
 {
     public Guid? DocumentId { get; init; }
     public string Glyph { get; init; } = Glyphs.Document;
+    /// <summary>Файл для системного значка (null — глиф).</summary>
+    public string? IconFile { get; init; }
     public string Title { get; init; } = string.Empty;
     public string Name { get; init; } = string.Empty;
     public string DrawnWithText { get; init; } = string.Empty;
@@ -442,6 +461,7 @@ public sealed partial class ModelTabViewModel : NodeTabViewModel
             {
                 DocumentId = id,
                 Glyph = tree?.Glyph ?? Glyphs.Document,
+                IconFile = file,
                 Title = tree?.Designation is { Length: > 0 } d ? d : file,
                 Name = tree?.Name ?? string.Empty,
                 DrawnWithText = r.ChildVersion is { } cv ? $"v{cv}" + (r.ChildLatestVersion is { } l && l != cv ? $" (последняя v{l})" : string.Empty) : string.Empty,

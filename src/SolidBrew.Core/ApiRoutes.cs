@@ -32,6 +32,7 @@ namespace SolidBrew.Core
             public const string DocumentUnused = "/api/documents/{id:guid}/unused";          // POST
             public const string MissingObjects = "/api/objects/missing";                     // POST
             public const string Object = "/api/objects/{sha}";                               // PUT, GET
+            public const string VersionsByHash = "/api/versions/by-hash";                    // POST
             public const string Checkins = "/api/checkins";                                  // POST
             public const string AdminUsers = "/api/admin/users";                             // GET, POST
             public const string AdminUser = "/api/admin/users/{id:guid}";                    // PUT
@@ -61,6 +62,7 @@ namespace SolidBrew.Core
         public const string NotificationsSeen = Templates.NotificationsSeen;
         public const string Projects = Templates.Projects;
         public const string MissingObjects = Templates.MissingObjects;
+        public const string VersionsByHash = Templates.VersionsByHash;
         public const string Checkins = Templates.Checkins;
         public const string AdminUsers = Templates.AdminUsers;
         public const string AdminLocks = Templates.AdminLocks;

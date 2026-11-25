@@ -229,6 +229,25 @@ public enum StateMark
     Missing,
 }
 
+/// <summary>Цветной кружок после значка документа в дереве (порядок важности: красный, жёлтый, синий, зелёный).</summary>
+public enum StatusDot
+{
+    /// <summary>Без кружка (служебный узел, черновик, ссылка вне PDM).</summary>
+    None,
+    /// <summary>Зелёный: сдан в хранилище — свободен, правок нет.</summary>
+    InStorage,
+    /// <summary>Синий: взят мной, не изменён.</summary>
+    Mine,
+    /// <summary>Красный: взят мной и изменён.</summary>
+    MineModified,
+    /// <summary>Жёлтый: сборку или чертёж надо взять и пересохранить — изменилась или устарела входящая модель.</summary>
+    NeedsResave,
+    /// <summary>Фиолетовый: взят другим.</summary>
+    Other,
+    /// <summary>Серый: файла нет в рабочей папке.</summary>
+    Missing,
+}
+
 public static class ViewModelExtensions
 {
     /// <summary>Пересчитать доступность всех команд объекта.</summary>

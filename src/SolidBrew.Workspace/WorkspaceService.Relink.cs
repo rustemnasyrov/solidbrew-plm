@@ -121,10 +121,10 @@ public sealed partial class WorkspaceService
 
     private static async Task SyncRefPathsAsync(ICadAdapter adapter, string full, List<(WorkspaceDependency Dep, string NewPath)> changes, CancellationToken ct)
     {
-        CadDocumentInfo info;
+        List<CadReference> refs;
         try
         {
-            info = await adapter.ReadAsync(full, ct).ConfigureAwait(false);
+            refs = await adapter.ReadReferencesAsync(full, ct).ConfigureAwait(false);
         }
         catch (CadException)
         {
@@ -132,8 +132,8 @@ public sealed partial class WorkspaceService
         }
         foreach (var (dep, newPath) in changes)
         {
-            var hasOld = info.References.Any(r => SameSavedPath(r.SavedPath, dep.RefPath));
-            var hasNew = info.References.Any(r => SameSavedPath(r.SavedPath, newPath));
+            var hasOld = refs.Any(r => SameSavedPath(r.SavedPath, dep.RefPath));
+            var hasNew = refs.Any(r => SameSavedPath(r.SavedPath, newPath));
             if (hasNew && !hasOld) dep.RefPath = newPath;
         }
     }

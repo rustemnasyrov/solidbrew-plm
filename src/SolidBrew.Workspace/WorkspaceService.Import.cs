@@ -7,15 +7,17 @@ namespace SolidBrew.Workspace;
 public sealed partial class WorkspaceService
 {
     /// <summary>
-    /// Подготовить постановку на учёт готового проекта: обход ссылок от головного файла, поиск чертежей и прочих документов
+    /// Подготовить постановку на учёт готового проекта: обход ссылок от головного файла, поиск чертежей
     /// в папке головного файла (со всеми подпапками, например <c>Чертежи/</c>) и в <paramref name="extraFolders"/> по их ссылкам
-    /// на комплект: попадают только документы, которые ссылаются на документы комплекта. Исходники только читаются: каждый
-    /// копируется во временную папку кэша, хешируется и читается адаптером уже из копии; атрибуты исходников не меняются.
+    /// на комплект: попадают только чертежи, которые ссылаются на документы комплекта (у остальных читаются только ссылки).
+    /// Документы комплекта копируются во временную папку кэша, хешируются и читаются адаптером уже из копии
+    /// (свойства — из кэша по хешу, если файл уже читался); атрибуты исходников не меняются.
     /// Папки поиска — папка головного файла и <paramref name="extraFolders"/>.
     /// </summary>
     public async Task<ImportReport> PrepareImportAsync(string headFile, IEnumerable<string>? extraFolders = null,
-        IProgress<WorkProgress>? progress = null, CancellationToken ct = default)
+        IProgress<WorkProgress>? progress = null, CancellationToken ct = default, ImportOptions? options = null)
     {
+        options ??= new ImportOptions();
         var head = Path.GetFullPath(headFile);
         if (!File.Exists(head)) throw new WorkspaceException($"Головной документ не найден: {head}.");
         if (Adapters.FindFor(head) == null) throw new WorkspaceException($"«{Path.GetFileName(head)}» не является документом поддерживаемого CAD.");
@@ -33,6 +35,8 @@ public sealed partial class WorkspaceService
         var report = new ImportReport
         {
             HeadFile = head,
+            RelPathPrefix = options.RelPathPrefix?.Trim().Trim('/') ?? string.Empty,
+            AllowExistingHead = options.AllowExistingHead,
             SearchFolders = searchFolders,
             ExtraFolders = extras,
             StagingRoot = Cache.CreateStagingFolder(),
@@ -44,7 +48,6 @@ public sealed partial class WorkspaceService
             progress?.Report(new WorkProgress(WorkStage.Scanning, 0, 0, "Составление списка файлов в папках поиска"));
             var nameIndex = BuildNameIndex(searchFolders, ct);
             var counter = 0;
-            var pending = new List<ImportDocument>();
 
             async Task<ImportDocument> ScanAsync(string path, bool isHead, bool isExtra)
             {
@@ -69,14 +72,6 @@ public sealed partial class WorkspaceService
                         foreach (var t in targets)
                         {
                             if (report.Find(t) != null) continue;
-                            var waiting = pending.FirstOrDefault(p => string.Equals(p.SourcePath, t, StringComparison.OrdinalIgnoreCase));
-                            if (waiting != null)
-                            {
-                                pending.Remove(waiting);
-                                report.Documents.Add(waiting);
-                                queue.Enqueue(waiting);
-                                continue;
-                            }
                             queue.Enqueue(await ScanAsync(t, false, false).ConfigureAwait(false));
                         }
                     }
@@ -86,34 +81,58 @@ public sealed partial class WorkspaceService
             var headDoc = await ScanAsync(head, true, false).ConfigureAwait(false);
             await ClosureAsync(headDoc).ConfigureAwait(false);
 
-            // Документы папки головного файла (с подпапками) и доп. папок: читаем каждый, берём те, что ссылаются на документы комплекта.
-            var extraFiles = searchFolders.SelectMany(f => SafeEnumerate(f)).Where(p => Adapters.FindFor(p) != null && !IsTempName(p))
+            // Чертежи в папке головного файла (с подпапками) и в доп. папках: сборка не знает своих чертежей, поэтому их ищут
+            // по ссылкам «чертёж → модель». Кандидаты — только чертежи: деталь или сборка из папки поиска, ссылающаяся на
+            // комплект, — это вышестоящее или соседнее изделие, ему в комплекте не место. Сначала читаются только ссылки
+            // (без копирования и без открытия в CAD); полностью читаются лишь чертежи, вошедшие в комплект.
+            var drawingFiles = searchFolders.SelectMany(f => SafeEnumerate(f))
+                .Where(p => !IsTempName(p) && Adapters.FindFor(p) is { } a && a.KindOf(p) == DocumentKind.Drawing)
                 .Select(Path.GetFullPath).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
-            foreach (var path in extraFiles)
+            var candidates = new List<(string Path, List<ImportReference> Refs)>();
+            var checkedDrawings = 0;
+            foreach (var path in drawingFiles)
             {
+                ct.ThrowIfCancellationRequested();
+                checkedDrawings++;
                 if (report.Find(path) != null) continue;
-                var d = await ScanAsync(path, false, true).ConfigureAwait(false);
-                report.Documents.Remove(d);
-                pending.Add(d);
+                progress?.Report(new WorkProgress(WorkStage.Reading, checkedDrawings, drawingFiles.Count, $"Поиск чертежей: ссылки «{Path.GetFileName(path)}»"));
+                List<CadReference> refs;
+                try
+                {
+                    refs = await Adapters.FindFor(path)!.ReadReferencesAsync(path, ct).ConfigureAwait(false);
+                }
+                catch (CadException)
+                {
+                    continue; // нечитаемый чертёж не может быть привязан к комплекту
+                }
+                var dir = Path.GetDirectoryName(path)!;
+                candidates.Add((path, refs.Select(r => ClassifyImportReference(path, dir, r.SavedPath, searchFolders, nameIndex)).ToList()));
             }
             bool changed;
             do
             {
                 changed = false;
-                foreach (var d in pending.ToList())
+                foreach (var c in candidates.ToList())
                 {
-                    if (!pending.Contains(d)) continue;
-                    var linked = d.References.Any(r =>
+                    if (report.Find(c.Path) != null)
+                    {
+                        candidates.Remove(c);
+                        continue;
+                    }
+                    var linked = c.Refs.Any(r =>
                         (r.TargetPath != null && report.Find(r.TargetPath) != null) ||
-                        r.Candidates.Any(c => report.Find(c) != null));
+                        r.Candidates.Any(x => report.Find(x) != null));
                     if (!linked) continue;
-                    pending.Remove(d);
-                    report.Documents.Add(d);
+                    candidates.Remove(c);
+                    var d = await ScanAsync(c.Path, false, true).ConfigureAwait(false);
                     await ClosureAsync(d).ConfigureAwait(false);
                     changed = true;
                 }
             } while (changed);
-            foreach (var d in pending) FileOps.TryDelete(d.StagingPath);
+
+            // Уже учтённые в PDM (то же содержимое) — берутся из хранилища, а не заводятся заново.
+            progress?.Report(new WorkProgress(WorkStage.Scanning, counter, counter, "Поиск уже учтённых файлов в хранилище"));
+            await FindExistingAsync(report, ct).ConfigureAwait(false);
 
             // Решения по умолчанию: неоднозначные — без выбора, «только по имени» и «вне папок» — без подтверждения.
             report.Recompute();
@@ -125,6 +144,32 @@ public sealed partial class WorkspaceService
             report.Dispose();
             throw;
         }
+    }
+
+    /// <summary>
+    /// Отметить документы, содержимое которых уже есть в PDM. Из нескольких версий с тем же содержимым — используемый документ,
+    /// его последняя версия, самая свежая. Старый сервер без этой операции (404) — ничего не отмечается.
+    /// </summary>
+    private async Task FindExistingAsync(ImportReport report, CancellationToken ct)
+    {
+        var hashes = report.Documents.Where(d => d.Sha256.Length > 0).Select(d => d.Sha256).Distinct(StringComparer.Ordinal).ToList();
+        if (hashes.Count == 0) return;
+        List<VersionByHashDto> found;
+        try
+        {
+            found = await Api.FindVersionsByHashAsync(hashes, ct).ConfigureAwait(false);
+        }
+        catch (PdmApiException ex) when (!ex.IsNetworkError)
+        {
+            return;
+        }
+        var best = found.GroupBy(v => v.Sha256, StringComparer.Ordinal).ToDictionary(g => g.Key, g => g
+            .OrderByDescending(v => v.Document.Status == DocumentStatus.Active)
+            .ThenByDescending(v => v.Version == v.Document.LatestVersion)
+            .ThenByDescending(v => v.Document.LatestAt)
+            .First(), StringComparer.Ordinal);
+        foreach (var d in report.Documents)
+            d.Existing = d.Sha256.Length > 0 && best.TryGetValue(d.Sha256, out var v) ? v : null;
     }
 
     private static bool IsTempName(string path)
@@ -198,7 +243,7 @@ public sealed partial class WorkspaceService
         CadDocumentInfo info;
         try
         {
-            info = await adapter.ReadAsync(copy, ct).ConfigureAwait(false);
+            info = await ReadCadAsync(adapter, copy, sha, ct).ConfigureAwait(false);
         }
         catch (CadException ex)
         {
@@ -239,13 +284,23 @@ public sealed partial class WorkspaceService
 
     private static ImportReference ClassifyImportReference(string source, string dir, string saved, List<string> searchFolders, Dictionary<string, List<string>> nameIndex)
     {
+        // Порядок поиска SOLIDWORKS (без документов в памяти): файл с тем же именем в папке ссылающегося документа,
+        // затем записанный путь. Так CAD и откроет исходник; файл, перенесённый вместе с документом, — найден, а не «по имени».
         string? resolved = null;
         try
         {
-            var normalized = saved.Replace('/', '\\');
-            var candidate = Path.IsPathFullyQualified(normalized) ? normalized : Path.Combine(dir, normalized);
-            candidate = Path.GetFullPath(candidate);
-            if (File.Exists(candidate)) resolved = candidate;
+            var sameFolder = Path.GetFullPath(Path.Combine(dir, CadReference.FileNameOf(saved)));
+            if (File.Exists(sameFolder) && !string.Equals(sameFolder, source, StringComparison.OrdinalIgnoreCase))
+            {
+                resolved = sameFolder;
+            }
+            else
+            {
+                var normalized = saved.Replace('/', '\\');
+                var candidate = Path.IsPathFullyQualified(normalized) ? normalized : Path.Combine(dir, normalized);
+                candidate = Path.GetFullPath(candidate);
+                if (File.Exists(candidate)) resolved = candidate;
+            }
         }
         catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException or IOException)
         {
@@ -301,7 +356,17 @@ public sealed partial class WorkspaceService
             return result;
         }
 
-        var docs = report.IncludedDocuments.ToList();
+        var docs = report.NewDocuments.ToList();
+        if (docs.Count == 0 && report.Head.Disposition == ImportDisposition.FromStorage && report.Head.Existing is { } existingHead)
+        {
+            // Загружать нечего: файл уже есть в PDM — им и пользуемся.
+            result.Success = true;
+            result.HeadDocumentId = existingHead.Document.Id;
+            result.HeadVersion = existingHead.Version;
+            result.Message = $"«{report.Head.FileName}» уже учтён в PDM: {ImportReport.Describe(existingHead)}. Загружать нечего.";
+            report.Dispose();
+            return result;
+        }
         var request = new CheckinRequest
         {
             ProjectId = projectId,
@@ -309,6 +374,7 @@ public sealed partial class WorkspaceService
             AcceptNewerCadVersion = acceptNewerCad,
         };
         var anyMissing = false;
+        var anyByLink = false;
         foreach (var d in docs)
         {
             var item = new CheckinItem
@@ -328,16 +394,28 @@ public sealed partial class WorkspaceService
             {
                 var t = r.EffectiveTarget != null ? report.Find(r.EffectiveTarget) : null;
                 if (t == d) continue;
-                if (t is { IsIncluded: true }) item.References.Add(new CheckinReference { RefPath = r.SavedPath, TempKey = t.RelPath });
-                else
+                switch (t?.Disposition)
                 {
-                    anyMissing = true;
-                    item.References.Add(new CheckinReference { RefPath = r.SavedPath });
+                    case ImportDisposition.New:
+                        item.References.Add(new CheckinReference { RefPath = r.SavedPath, TempKey = t.RelPath });
+                        break;
+                    case ImportDisposition.FromStorage:
+                        item.References.Add(new CheckinReference { RefPath = r.SavedPath, DocumentId = t.Existing!.Document.Id, Version = t.Existing.Version });
+                        break;
+                    case ImportDisposition.ByLink:
+                        // Галочка снята: ссылка остаётся путём к файлу, CAD откроет его по ссылке.
+                        anyByLink = true;
+                        item.References.Add(new CheckinReference { RefPath = r.SavedPath });
+                        break;
+                    default:
+                        anyMissing = true;
+                        item.References.Add(new CheckinReference { RefPath = r.SavedPath });
+                        break;
                 }
             }
             request.Items.Add(item);
         }
-        request.AllowUnresolvedReferences = anyMissing && allowMissing;
+        request.AllowUnresolvedReferences = anyByLink || (anyMissing && allowMissing);
 
         try
         {
@@ -370,7 +448,12 @@ public sealed partial class WorkspaceService
             result.HeadVersion = headItem.Version;
         }
         result.Success = true;
-        result.Message = $"Поставлено на учёт документов: {result.Response.Items.Count}." + (anyMissing ? " Есть отсутствующие ссылки." : string.Empty);
+        var fromStorage = report.FromStorageDocuments.Count();
+        var byLink = report.ByLinkDocuments.Count();
+        result.Message = $"Поставлено на учёт документов: {result.Response.Items.Count}." +
+                         (fromStorage > 0 ? $" Взято из хранилища: {fromStorage}." : string.Empty) +
+                         (byLink > 0 ? $" Оставлено ссылками на файлы: {byLink}." : string.Empty) +
+                         (anyMissing ? " Есть отсутствующие ссылки." : string.Empty);
         report.Dispose();
         return result;
     }

@@ -79,6 +79,8 @@ public sealed partial class ProductItem : ObservableObject
     public string Group { get; }
     public string? WorkRoot { get; }
     public string? Note { get; }
+    /// <summary>Имя файла головного документа (для значка типа), если известно.</summary>
+    public string? FileName { get; init; }
 
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(PinGlyph))]
@@ -120,6 +122,23 @@ public sealed partial class ProductCatalogViewModel : ObservableObject
     public ObservableCollection<ProductItem> Recent { get; } = new();
     public ObservableCollection<ProductItem> Roots { get; } = new();
     public ObservableCollection<ProductItem> Found { get; } = new();
+
+    /// <summary>Все известные изделия: закреплённые, недавние и корневые сборки сервера (по одному на документ).</summary>
+    public List<ProductItem> AllProducts()
+    {
+        lock (_sync)
+        {
+            var fileNames = _roots.Where(r => r.FileName != null).ToDictionary(r => r.DocumentId, r => r.FileName);
+            return Pinned.Concat(Recent).Concat(_roots).GroupBy(p => p.DocumentId)
+                .Select(g =>
+                {
+                    var p = g.First();
+                    return p.FileName == null && fileNames.TryGetValue(p.DocumentId, out var f)
+                        ? new ProductItem(p.DocumentId, p.Designation, p.Name, p.Group, p.WorkRoot, p.Note) { IsPinned = p.IsPinned, FileName = f }
+                        : p;
+                }).ToList();
+        }
+    }
 
     /// <summary>Что показывать: без запроса — закреплённые, недавние, корневые; с запросом — найденные сборки.</summary>
     public ObservableCollection<ProductItem> Items { get; } = new();
@@ -181,7 +200,7 @@ public sealed partial class ProductCatalogViewModel : ObservableObject
             var found = await Task.Run(() => api.SearchDocumentsAsync(limit: 200, roots: true));
             roots = found.Where(d => d.Kind == DocumentKind.Assembly)
                 .OrderBy(d => d.Designation ?? d.FileName, StringComparer.CurrentCultureIgnoreCase)
-                .Select(d => new ProductItem(d.Id, d.Designation, d.Name ?? d.FileName, ProductItem.RootsGroup, note: Note(d)) { IsPinned = _session.Profile.IsPinned(d.Id) })
+                .Select(d => new ProductItem(d.Id, d.Designation, d.Name ?? d.FileName, ProductItem.RootsGroup, note: Note(d)) { IsPinned = _session.Profile.IsPinned(d.Id), FileName = d.FileName })
                 .ToList();
             status = string.Empty;
         }

@@ -105,6 +105,13 @@ namespace SolidBrew.Core.Api
 
         // --- Архив содержимого ---
 
+        public async Task<List<VersionByHashDto>> FindVersionsByHashAsync(IEnumerable<string> hashes, CancellationToken ct = default)
+        {
+            var request = new VersionsByHashRequest { Hashes = Required(hashes, nameof(hashes)).ToList() };
+            var response = await SendJsonAsync<VersionsByHashResponse>(HttpMethod.Post, ApiRoutes.VersionsByHash, request, ct).ConfigureAwait(false);
+            return response.Items;
+        }
+
         public async Task<List<string>> GetMissingObjectsAsync(IEnumerable<string> hashes, CancellationToken ct = default)
         {
             var request = new MissingObjectsRequest { Hashes = Required(hashes, nameof(hashes)).ToList() };

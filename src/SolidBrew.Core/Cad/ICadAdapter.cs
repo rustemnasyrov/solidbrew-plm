@@ -27,6 +27,12 @@ namespace SolidBrew.Core.Cad
         Task<CadDocumentInfo> ReadAsync(string path, CancellationToken ct = default);
 
         /// <summary>
+        /// Прочитать только ссылки документа — без свойств и конфигураций. Для SOLIDWORKS это не открывает документ
+        /// и в десятки раз быстрее <see cref="ReadAsync"/>. Ошибки — <see cref="CadException"/>.
+        /// </summary>
+        Task<List<CadReference>> ReadReferencesAsync(string path, CancellationToken ct = default);
+
+        /// <summary>
         /// Переписать ссылки внутри файла: ключ — старый путь ссылки (как в <see cref="CadReference.SavedPath"/>),
         /// значение — новый полный путь.
         /// </summary>

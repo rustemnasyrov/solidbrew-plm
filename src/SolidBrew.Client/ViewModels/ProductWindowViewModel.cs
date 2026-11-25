@@ -14,8 +14,10 @@ namespace SolidBrew.Client.ViewModels;
 /// справа панель выбранного узла с действиями и вкладками. Изделие переключается в том же окне; «Открыть в новом окне» —
 /// второе окно со своим изделием и своей папкой.
 /// </summary>
-public sealed partial class ProductWindowViewModel : ObservableObject, INodeHost
+public sealed partial class ProductWindowViewModel : ObservableObject, INodeHost, IDisposable
 {
+    private readonly WorkspaceWatcher _watcher = new();
+    private bool _watchPending;
     private bool _opening;
     private bool _unseenNotifications;
     private int _refreshVersion;
@@ -26,9 +28,18 @@ public sealed partial class ProductWindowViewModel : ObservableObject, INodeHost
         Busy.ErrorHandler = (title, error) => Dialogs.ShowError(title, error);
         Busy.PropertyChanged += (_, e) =>
         {
-            if (e.PropertyName == nameof(BusyState.IsBusy)) NotifyAll();
+            if (e.PropertyName != nameof(BusyState.IsBusy)) return;
+            NotifyAll();
+            // Файлы менялись, пока шла операция, — обновиться, когда она закончится.
+            if (!Busy.IsBusy && _watchPending) _ = OnWorkspaceChangedAsync();
         };
         Flow = new WorkflowController(session, Busy, restoreLast: false);
+        Flow.PropertyChanged += (_, e) =>
+        {
+            if (e.PropertyName == nameof(WorkflowController.WorkRoot)) _watcher.Root = Flow.WorkRoot;
+        };
+        // Сохранили файл в CAD (или он изменился иначе) — состояние и действия обновляются сами, без F5.
+        _watcher.Changed += async (_, _) => await OnWorkspaceChangedAsync();
         Flow.Changed += async (_, _) =>
         {
             if (_opening) return;
@@ -38,6 +49,11 @@ public sealed partial class ProductWindowViewModel : ObservableObject, INodeHost
         Flow.Notices += (_, items) => AddNotices(items);
         Tree = new ProductTreeViewModel();
         Tree.PropertyChanged += OnTreeChanged;
+        Tree.ProductRequested += async p =>
+        {
+            if (Busy.IsBusy) return;
+            await OpenProductAsync(p.ToRef());
+        };
         Panel = new NodePanelViewModel(this, tabs ?? NodeTabRegistry.CreateDefault(), CommandFor);
         Switcher = new ProductCatalogViewModel(session);
         Notices.CollectionChanged += (_, _) =>
@@ -132,6 +148,26 @@ public sealed partial class ProductWindowViewModel : ObservableObject, INodeHost
     // ------------------------------------------------------------------ изделие
 
     /// <summary>
+    /// Начало работы окна: в дереве — все изделия (закреплённые, недавние, корневые сборки сервера);
+    /// если задано изделие — оно открывается.
+    /// </summary>
+    public async Task StartAsync(ProductRef? product)
+    {
+        await LoadProductsAsync(reload: false);
+        if (product != null) await OpenProductAsync(product);
+    }
+
+    /// <summary>Список изделий верхнего уровня дерева (с сервера — один раз; <paramref name="reload"/> — заново).</summary>
+    public async Task LoadProductsAsync(bool reload)
+    {
+        Switcher.RebuildLocal();
+        Tree.SetProducts(Switcher.AllProducts());
+        await (reload ? Switcher.ReloadAsync() : Switcher.LoadAsync());
+        Tree.SetProducts(Switcher.AllProducts());
+        if (!string.IsNullOrEmpty(Switcher.StatusText)) AddNotices(new[] { Switcher.StatusText });
+    }
+
+    /// <summary>
     /// Открыть изделие в этом окне. Если для него есть недавняя рабочая папка — открывается она; иначе папка спрашивается
     /// (по умолчанию <c>C:\PDM\&lt;обозначение&gt;</c>) и выполняется «Открыть» с чертежами (окно конфликтов — только если они есть).
     /// </summary>
@@ -180,6 +216,7 @@ public sealed partial class ProductWindowViewModel : ObservableObject, INodeHost
             Product = new ProductRef(doc.Id, doc.Designation, doc.Name ?? doc.FileName, root);
             OnPropertyChanged(nameof(WorkRootText));
             Switcher.RebuildLocal();
+            Tree.SetProducts(Switcher.AllProducts());
         }
         finally
         {
@@ -222,6 +259,22 @@ public sealed partial class ProductWindowViewModel : ObservableObject, INodeHost
         if (status.Messages.Count > 0) AddNotices(status.Messages);
         Busy.Done(status.ServerChecked ? $"Документов в изделии: {Tree.AllNodes().Count(n => n.IsDocument)}." : "Сервер не опрошен: " + status.ServerError);
     }
+
+    /// <summary>В рабочей папке изменились файлы: обновить дерево (во время операции — после неё).</summary>
+    private async Task OnWorkspaceChangedAsync()
+    {
+        if (Product == null) return;
+        if (_opening || Busy.IsBusy)
+        {
+            _watchPending = true;
+            return;
+        }
+        _watchPending = false;
+        PendingRefresh = RefreshAsync();
+        await PendingRefresh;
+    }
+
+    public void Dispose() => _watcher.Dispose();
 
     private void OnTreeChanged(object? sender, PropertyChangedEventArgs e)
     {
@@ -340,6 +393,32 @@ public sealed partial class ProductWindowViewModel : ObservableObject, INodeHost
 
     private bool CanImport() => Session.CanModify && !Busy.IsBusy;
 
+    /// <summary>
+    /// «Добавить проект…»: выбрать сборку SOLIDWORKS (или другой документ CAD) и поставить её на учёт;
+    /// новое изделие появляется в дереве и открывается, если так выбрано в конце постановки.
+    /// </summary>
+    [RelayCommand(CanExecute = nameof(CanImport))]
+    private async Task AddProjectAsync()
+    {
+        var all = Session.Workspace.Adapters.All.SelectMany(a => a.Extensions).Select(e => "*" + e).ToList();
+        var filter = "Сборки SOLIDWORKS (*.sldasm)|*.sldasm|" +
+                     $"Документы CAD ({string.Join(", ", all)})|{string.Join(";", all)}|Все файлы (*.*)|*.*";
+        var start = Flow.WorkRoot != null && Directory.Exists(Flow.WorkRoot) ? Path.GetDirectoryName(Flow.WorkRoot) : null;
+        var file = Dialogs.PickFile("Добавить проект: выберите сборку SOLIDWORKS", filter, start);
+        if (file == null) return;
+        var created = Flow.Import(ProductDocument?.ProjectKind == ProjectKind.Project ? ProductDocument.ProjectId : null, file);
+        await LoadProductsAsync(reload: true);
+        if (created != null) await OpenProductAsync(created);
+    }
+
+    /// <summary>Двойной щелчок по неоткрытому изделию в дереве — открыть его.</summary>
+    [RelayCommand]
+    private async Task OpenStubAsync()
+    {
+        if (Busy.IsBusy || Node is not { IsProductStub: true } n) return;
+        await OpenProductAsync(n.Product!.ToRef());
+    }
+
     /// <summary>«Поставить на учёт»; новое изделие (если выбрано «Открыть») открывается в этом окне.</summary>
     [RelayCommand(CanExecute = nameof(CanImport))]
     private async Task ImportAsync()
@@ -407,15 +486,73 @@ public sealed partial class ProductWindowViewModel : ObservableObject, INodeHost
         NodeActionKind.ShowInExplorer => ShowNodeInExplorerCommand,
         NodeActionKind.OpenAsProduct => OpenAsProductCommand,
         NodeActionKind.OpenAsProductInNewWindow => OpenAsProductInNewWindowCommand,
+        NodeActionKind.RegisterLinked => RegisterLinkedCommand,
+        NodeActionKind.AddProject => AddProjectCommand,
+        NodeActionKind.RegisterLinkedPick => RegisterLinkedPickCommand,
+        NodeActionKind.ExpandBranch => ExpandBranchCommand,
+        NodeActionKind.CollapseBranch => CollapseBranchCommand,
         _ => throw new ArgumentOutOfRangeException(nameof(kind)),
     };
 
     private static string Label(ProductNodeViewModel n) => Format.Doc(n.LocalRelPath ?? n.FileName, n.Designation);
 
+    /// <summary>Просмотр должен отпустить файл (перед открытием в CAD).</summary>
+    public event EventHandler? ReleasePreviewRequested;
+
     [RelayCommand(CanExecute = nameof(HasNode))]
     private void OpenInCad()
     {
-        if (Node?.FullPath is { } path) Flow.OpenFile(path);
+        if (Node?.OpenablePath is not { } path) return;
+        ReleasePreviewRequested?.Invoke(this, EventArgs.Empty);
+        Flow.OpenFile(path);
+    }
+
+    [RelayCommand]
+    private void ExpandBranch()
+    {
+        if (Node is { } n) ProductTreeViewModel.ExpandBranch(n);
+    }
+
+    [RelayCommand]
+    private void CollapseBranch()
+    {
+        if (Node is { } n) ProductTreeViewModel.CollapseBranch(n);
+    }
+
+    /// <summary>
+    /// Ссылка на файл, не учтённый в PDM (файла по ссылке нет или нужен другой): пользователь указывает файл модели,
+    /// он ставится на учёт рядом с родителем, и ссылка родителя привязывается к нему.
+    /// </summary>
+    [RelayCommand(CanExecute = nameof(HasNode))]
+    private async Task RegisterLinkedPickAsync()
+    {
+        if (Node is not { Type: NodeType.Unresolved } n || n.ParentDocument is not { DocumentId: { } parentId } parent) return;
+        var refPath = n.Kit!.RefPath;
+        var ext = Path.GetExtension(refPath);
+        var all = Session.Workspace.Adapters.All.SelectMany(a => a.Extensions).Select(e => "*" + e).ToList();
+        var filter = (ext.Length > 1 ? $"«{Path.GetFileName(refPath)}» и файлы *{ext}|*{ext}|" : string.Empty) +
+                     $"Документы CAD ({string.Join(", ", all)})|{string.Join(";", all)}|Все файлы (*.*)|*.*";
+        string? start = null;
+        try
+        {
+            var dir = Path.GetDirectoryName(refPath.Replace('/', '\\'));
+            if (!string.IsNullOrEmpty(dir) && Directory.Exists(dir)) start = dir;
+        }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+        }
+        start ??= Flow.WorkRoot;
+        var file = Dialogs.PickFile($"Файл модели для «{Path.GetFileName(refPath)}»", filter, start);
+        if (file == null) return;
+        await Flow.RegisterLinkedAsync(parentId, parent.Kit!.ProjectId, parent.Kit.RelPath, Label(parent), refPath, file);
+    }
+
+    /// <summary>Файл «по ссылке» — поставить на учёт и привязать к нему ссылку сборки-родителя.</summary>
+    [RelayCommand(CanExecute = nameof(HasNode))]
+    private async Task RegisterLinkedAsync()
+    {
+        if (Node is not { Type: NodeType.Unresolved, LinkPath: { } link } n || n.ParentDocument is not { DocumentId: { } parentId } parent) return;
+        await Flow.RegisterLinkedAsync(parentId, parent.Kit!.ProjectId, parent.Kit.RelPath, Label(parent), n.Kit!.RefPath, link);
     }
 
     [RelayCommand(CanExecute = nameof(HasNode))]
@@ -446,13 +583,13 @@ public sealed partial class ProductWindowViewModel : ObservableObject, INodeHost
     [RelayCommand(CanExecute = nameof(HasNode))]
     private void ShowNodeInExplorer()
     {
-        if (Node?.FullPath is { } path) Flow.ShowInExplorer(path);
+        if (Node?.OpenablePath is { } path) Flow.ShowInExplorer(path);
     }
 
     /// <summary>«Открыть как изделие»: сборка становится корнем этого окна.</summary>
     [RelayCommand(CanExecute = nameof(HasNode))]
     private Task OpenAsProductAsync() =>
-        Node is { DocumentId: { } id } n ? OpenProductAsync(new ProductRef(id, n.Designation, n.Name)) : Task.CompletedTask;
+        Node is { DocumentId: { } id } n ? OpenProductAsync(n.Product?.ToRef() ?? new ProductRef(id, n.Designation, n.Name)) : Task.CompletedTask;
 
     [RelayCommand(CanExecute = nameof(HasNode))]
     private void OpenAsProductInNewWindow()

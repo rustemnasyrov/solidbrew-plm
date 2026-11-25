@@ -72,6 +72,10 @@ public static class LocalProblemCodes
     public const string ReferencesNotRewritten = "local.referencesNotRewritten";
     /// <summary>Чертёж, добавленный к комплекту, сдан с другой версией модели, чем в комплекте (для сведения).</summary>
     public const string DrawingOtherModelVersion = "local.drawingOtherModelVersion";
+    /// <summary>Документ постановки уже учтён в PDM (то же содержимое).</summary>
+    public const string AlreadyInStorage = "local.alreadyInStorage";
+    /// <summary>Документы с снятой галочкой: не загружаются, ссылки на них остаются путями (для сведения).</summary>
+    public const string ByLink = "local.byLink";
     public const string Server = "server";
 }
 

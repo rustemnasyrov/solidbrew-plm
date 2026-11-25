@@ -113,7 +113,7 @@ public sealed partial class WorkspaceService
             {
                 try
                 {
-                    info = await adapter.ReadAsync(f.FullPath, ct).ConfigureAwait(false);
+                    info = await ReadCadAsync(adapter, f.FullPath, f.Sha, ct).ConfigureAwait(false);
                 }
                 catch (CadException ex)
                 {
@@ -124,6 +124,21 @@ public sealed partial class WorkspaceService
 
             var refs = info?.References.Select(r => ResolveInWorkspace(scan, f.FullPath, r.SavedPath)).ToList() ?? new List<ResolvedReference>();
             var e = f.Entry;
+            if (refs.Any(r => r.Resolution == ReferenceResolution.Missing))
+            {
+                // Неучтённые ссылки сданной версии (например, контекстная ссылка детали на сборку) и файлы по ссылке вне
+                // рабочей папки — допустимы: сдаются как есть.
+                var known = e != null ? await UnresolvedRefsOfAsync(e.DocumentId, e.Version, ct).ConfigureAwait(false) : new List<string>();
+                refs = refs.Select(r =>
+                {
+                    if (r.Resolution != ReferenceResolution.Missing) return r;
+                    var exists = LinkFileExists(r.SavedPath);
+                    var wasUnresolved = known.Any(k => SameSavedPath(k, r.SavedPath));
+                    return exists || wasUnresolved
+                        ? new ResolvedReference { SavedPath = r.SavedPath, Resolution = ReferenceResolution.Missing, KeepAsLink = true, LinkFileExists = exists }
+                        : r;
+                }).ToList();
+            }
             bool refsChanged = false;
             if (e != null && info != null)
             {
@@ -203,6 +218,34 @@ public sealed partial class WorkspaceService
 
         plan.Revalidate();
         return plan;
+    }
+
+    /// <summary>Пути ссылок версии документа, не привязанных к документам PDM. Сервер недоступен — пусто.</summary>
+    private async Task<List<string>> UnresolvedRefsOfAsync(Guid documentId, int version, CancellationToken ct)
+    {
+        try
+        {
+            var detail = await Api.GetDocumentAsync(documentId, ct).ConfigureAwait(false);
+            return detail.Versions.FirstOrDefault(v => v.Number == version)?.References
+                .Where(r => r.ChildDocumentId == null).Select(r => r.RefPath).ToList() ?? new List<string>();
+        }
+        catch (PdmApiException)
+        {
+            return new List<string>();
+        }
+    }
+
+    private static bool LinkFileExists(string savedPath)
+    {
+        try
+        {
+            var p = savedPath.Replace('/', '\\');
+            return Path.IsPathFullyQualified(p) && File.Exists(p);
+        }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            return false;
+        }
     }
 
     /// <summary>
@@ -294,6 +337,8 @@ public sealed partial class WorkspaceService
             Comment = string.IsNullOrWhiteSpace(comment) ? null : comment.Trim(),
             KeepLocks = keepLocks,
             AcceptNewerCadVersion = acceptNewerCad,
+            // Неучтённые ссылки «как есть» (см. ResolvedReference.KeepAsLink); прочие отсутствующие блокируют сдачу ещё в плане.
+            AllowUnresolvedReferences = included.Any(c => c.References.Any(r => r.KeepAsLink)),
         };
         foreach (var c in included)
         {

@@ -102,9 +102,19 @@ public sealed partial class WorkspaceService
             foreach (var u in kit.Unresolved)
             {
                 var parent = kit.Items.FirstOrDefault(i => i.DocumentId == u.ParentDocumentId && i.Version == u.ParentVersion);
-                plan.Problems.Add(new PlanProblem(ProblemSeverity.Warning, LocalProblemCodes.UnresolvedInKit,
-                    $"В {Texts.Doc(parent?.RelPath ?? "?", parent?.Designation)} v{u.ParentVersion} есть ссылка на отсутствующий файл «{u.RefPath}» — он не учтён в PDM. CAD не найдёт этот компонент.",
-                    parent?.RelPath, u.ParentDocumentId));
+                if (ExistsByLink(u.RefPath))
+                {
+                    // Файл не загружали в PDM намеренно (постановка «по ссылке»): CAD откроет его по пути из ссылки.
+                    plan.Problems.Add(new PlanProblem(ProblemSeverity.Info, LocalProblemCodes.UnresolvedInKit,
+                        $"«{Texts.FileNameOf(u.RefPath)}» из {Texts.Doc(parent?.RelPath ?? "?", parent?.Designation)} не учтён в PDM — CAD откроет его по ссылке: {u.RefPath}.",
+                        parent?.RelPath, u.ParentDocumentId));
+                }
+                else
+                {
+                    plan.Problems.Add(new PlanProblem(ProblemSeverity.Warning, LocalProblemCodes.UnresolvedInKit,
+                        $"В {Texts.Doc(parent?.RelPath ?? "?", parent?.Designation)} v{u.ParentVersion} есть ссылка на отсутствующий файл «{u.RefPath}» — он не учтён в PDM и по этому пути его нет. CAD не найдёт этот компонент.",
+                        parent?.RelPath, u.ParentDocumentId));
+                }
             }
         }
 
@@ -471,6 +481,20 @@ public sealed partial class WorkspaceService
         return result;
     }
 
+    /// <summary>Ссылка на файл, не учтённый в PDM, ведёт на существующий файл (абсолютный путь).</summary>
+    private static bool ExistsByLink(string refPath)
+    {
+        try
+        {
+            var p = refPath.Replace('/', '\\');
+            return Path.IsPathFullyQualified(p) && File.Exists(p);
+        }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            return false;
+        }
+    }
+
     /// <summary>Открыть головной документ в CAD и проверить, что компоненты загружены из рабочей папки и нужных версий.</summary>
     private async Task<OpenReport> VerifyInCadAsync(OpenPlan plan, WorkspaceState state, CancellationToken ct)
     {
@@ -484,6 +508,20 @@ public sealed partial class WorkspaceService
         catch (CadException ex)
         {
             return new OpenReport { HeadPath = head, Ok = false, Problems = { ex.Message } };
+        }
+
+        // Компоненты вне рабочей папки, которых нет в комплекте (не учтены в PDM, оставлены ссылкой при постановке), CAD
+        // законно грузит по пути из ссылки — это не ошибка. Ошибка — только документ комплекта, загруженный не из рабочей папки.
+        var kitNames = new HashSet<string>(plan.Items.Select(i => Texts.FileNameOf(i.RelPath)), StringComparer.OrdinalIgnoreCase);
+        var byLink = report.Configurations.SelectMany(c => c.Components)
+            .Where(c => !c.InsideWorkRoot && c.LoadedPath.Length > 0 && File.Exists(c.LoadedPath) && !kitNames.Contains(Path.GetFileName(c.LoadedPath)))
+            .Select(c => c.LoadedPath).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        if (byLink.Count > 0)
+        {
+            report.Problems.RemoveAll(p => byLink.Any(path =>
+                p.Contains(path, StringComparison.OrdinalIgnoreCase) ||
+                (p.Contains($"«{Path.GetFileName(path)}»", StringComparison.OrdinalIgnoreCase) &&
+                 p.Contains($"«{Path.GetDirectoryName(path)}»", StringComparison.OrdinalIgnoreCase))));
         }
 
         var expected = plan.Items.ToDictionary(i => i.DocumentId, i => i.Version);

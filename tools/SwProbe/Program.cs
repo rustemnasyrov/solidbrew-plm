@@ -23,8 +23,9 @@ internal static class Program
           open-verify <головной файл> <workRoot> открыть и проверить пути компонентов
           close <файл>                           закрыть документ (только открытый этим исполнителем)
           replace-ref <документ> <старый> <новый> заменить ссылку в закрытом документе
+          import-bench <головной файл> [папки…]  замер подготовки постановки на учёт: холодный/тёплый прогон, сверка
           serve --jobs <папка>                   исполнитель заданий из <папка>/inbox
-        Общие ключи: --out <файл>, --asm-mode selective|lightweight|full, --no-search, --start, --allow-write <папка>
+        Общие ключи: --out <файл>, --asm-mode selective|lightweight|full, --search (поиск ссылок SOLIDWORKS), --start, --allow-write <папка>
         """;
 
     public static async Task<int> Main(string[] args)
@@ -70,7 +71,7 @@ internal sealed class ProbeArgs
     public string? Jobs { get; set; }
     public bool Recursive { get; set; }
     public bool Traverse { get; set; }
-    public bool NoSearch { get; set; }
+    public bool Search { get; set; }
     public bool Start { get; set; }
     public SwAssemblyReadMode AsmMode { get; set; } = SwAssemblyReadMode.Selective;
     public List<string> AllowWrite { get; } = new List<string>();
@@ -88,7 +89,8 @@ internal sealed class ProbeArgs
                 case "--jobs": result.Jobs = Next(); break;
                 case "--recursive": result.Recursive = true; break;
                 case "--traverse": result.Traverse = true; break;
-                case "--no-search": result.NoSearch = true; break;
+                case "--search": result.Search = true; break;
+                case "--no-search": result.Search = false; break;
                 case "--start": result.Start = true; break;
                 case "--allow-write": result.AllowWrite.Add(Next()); break;
                 case "--asm-mode":

@@ -38,6 +38,10 @@ public sealed partial class NodePanelViewModel : ObservableObject
     [ObservableProperty]
     private NodeTabItem? _selectedTab;
 
+    /// <summary>Показывать просмотр модели (eDrawings) над вкладками.</summary>
+    [ObservableProperty]
+    private bool _showPreview = true;
+
     public bool HasNode => Node != null;
     public bool HasMore => MoreActions.Count > 0;
     public bool HasTabs => Tabs.Count > 0;
@@ -55,7 +59,10 @@ public sealed partial class NodePanelViewModel : ObservableObject
         var (primary, more) = NodeActionRules.For(node, canModify, isProductRoot);
         PrimaryActions.ReplaceWith(primary.Select(Make));
         MoreActions.ReplaceWith(more.Select(Make));
-        MenuActions.ReplaceWith(PrimaryActions.Concat(MoreActions));
+        // Контекстное меню дерева: действия узла и всегда — «Добавить проект…».
+        var menu = PrimaryActions.Concat(MoreActions).ToList();
+        if (canModify && menu.All(a => a.Kind != NodeActionKind.AddProject)) menu.Add(Make(NodeActionKind.AddProject));
+        MenuActions.ReplaceWith(menu);
 
         _switching = true;
         try

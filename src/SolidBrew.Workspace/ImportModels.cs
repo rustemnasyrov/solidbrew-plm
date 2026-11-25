@@ -56,6 +56,28 @@ public sealed class ImportReference
     };
 }
 
+/// <summary>Настройки постановки на учёт.</summary>
+public sealed class ImportOptions
+{
+    /// <summary>Папка проекта для новых документов («Сборки/Узел»); пусто — корень проекта.</summary>
+    public string? RelPathPrefix { get; init; }
+    /// <summary>Головной документ, уже учтённый в PDM, берётся из хранилища (а не ошибка).</summary>
+    public bool AllowExistingHead { get; init; }
+}
+
+/// <summary>Что будет с документом при постановке на учёт.</summary>
+public enum ImportDisposition
+{
+    /// <summary>Не попадает в постановку: на него не ведут ссылки включённых документов (или ссылка не подтверждена).</summary>
+    NotUsed,
+    /// <summary>Загружается в PDM новым документом.</summary>
+    New,
+    /// <summary>Такое же содержимое уже есть в PDM — ссылка привязывается к этой версии, файл не загружается.</summary>
+    FromStorage,
+    /// <summary>Галочка снята: в PDM не загружается, ссылка остаётся путём к файлу — CAD откроет его по ссылке.</summary>
+    ByLink,
+}
+
 /// <summary>Документ-исходник, найденный при постановке на учёт.</summary>
 public sealed class ImportDocument
 {
@@ -80,10 +102,19 @@ public sealed class ImportDocument
     public bool IsHead { get; init; }
     /// <summary>Найден в папке головного файла (с подпапками) или в дополнительных папках по своим ссылкам на комплект (чертёж, спецификация).</summary>
     public bool IsExtra { get; init; }
-    /// <summary>Для документов из дополнительных папок: включить в постановку (по умолчанию — да).</summary>
+    /// <summary>
+    /// Галочка «загружать»: по умолчанию — да. Снятая у модели или чертежа — файл не загружается в PDM, ссылки на него
+    /// остаются путями (<see cref="ImportDisposition.ByLink"/>). У головного документа не снимается.
+    /// </summary>
     public bool Include { get; set; } = true;
-    /// <summary>Попадает в постановку при текущих решениях.</summary>
+    /// <summary>Попадает в постановку (новым документом или из хранилища) при текущих решениях.</summary>
     public bool IsIncluded { get; internal set; }
+    /// <summary>Опубликованная версия PDM с тем же содержимым (SHA-256), если есть.</summary>
+    public VersionByHashDto? Existing { get; internal set; }
+    /// <summary>Что будет с документом при текущих решениях.</summary>
+    public ImportDisposition Disposition { get; internal set; }
+    /// <summary>Загружается новым документом.</summary>
+    public bool IsNew => Disposition == ImportDisposition.New;
     /// <summary>Ошибка чтения (файл не читается, нет адаптера CAD).</summary>
     public string? ReadError { get; init; }
     public List<ImportReference> References { get; } = new();
@@ -91,12 +122,20 @@ public sealed class ImportDocument
 
 /// <summary>
 /// Отчёт постановки на учёт. Решения по ссылкам задаются в <see cref="ImportReference.Accept"/>/<see cref="ImportReference.Chosen"/>,
-/// по документам доп. папок — в <see cref="ImportDocument.Include"/>; затем <see cref="Recompute"/>.
+/// по документам — галочкой <see cref="ImportDocument.Include"/>; затем <see cref="Recompute"/>.
+/// Документ, содержимое которого уже есть в PDM, берётся из хранилища; документ без галочки остаётся ссылкой на файл.
 /// Временные копии удаляются <see cref="Dispose"/> (или автоматически после успешной постановки).
 /// </summary>
 public sealed class ImportReport : IDisposable
 {
     public string HeadFile { get; init; } = string.Empty;
+    /// <summary>Папка проекта, под которую кладутся новые документы («Сборки/Узел»); пусто — корень проекта.</summary>
+    public string RelPathPrefix { get; init; } = string.Empty;
+    /// <summary>
+    /// Головной документ, уже учтённый в PDM, не ошибка, а «из хранилища» (постановка файла, оставленного ссылкой:
+    /// если такое содержимое уже есть, ссылка просто привязывается к этой версии).
+    /// </summary>
+    public bool AllowExistingHead { get; init; }
     public List<string> SearchFolders { get; init; } = new();
     public List<string> ExtraFolders { get; init; } = new();
     public string StagingRoot { get; init; } = string.Empty;
@@ -108,13 +147,20 @@ public sealed class ImportReport : IDisposable
     public Dictionary<string, int> WorkingCadVersions { get; init; } = new(StringComparer.OrdinalIgnoreCase);
 
     public ImportDocument Head => Documents.First(d => d.IsHead);
+    /// <summary>Документы постановки: новые и взятые из хранилища.</summary>
     public IEnumerable<ImportDocument> IncludedDocuments => Documents.Where(d => d.IsIncluded);
-    /// <summary>Ссылки включённых документов.</summary>
-    public IEnumerable<ImportReference> References => IncludedDocuments.SelectMany(d => d.References);
+    /// <summary>Загружаются новыми документами.</summary>
+    public IEnumerable<ImportDocument> NewDocuments => Documents.Where(d => d.IsNew);
+    /// <summary>Уже есть в PDM — ссылки привязываются к их версиям.</summary>
+    public IEnumerable<ImportDocument> FromStorageDocuments => Documents.Where(d => d.Disposition == ImportDisposition.FromStorage);
+    /// <summary>Галочка снята — остаются ссылками на файлы.</summary>
+    public IEnumerable<ImportDocument> ByLinkDocuments => Documents.Where(d => d.Disposition == ImportDisposition.ByLink);
+    /// <summary>Ссылки загружаемых документов.</summary>
+    public IEnumerable<ImportReference> References => NewDocuments.SelectMany(d => d.References);
     public IEnumerable<ImportReference> ByCategory(ImportReferenceCategory category) => References.Where(r => r.Category == category);
     /// <summary>Есть отсутствующие (или неподтверждённые) ссылки — постановка только с явным разрешением.</summary>
     public bool HasMissing => Problems.Any(p => p.Code is LocalProblemCodes.MissingReference or LocalProblemCodes.Unconfirmed);
-    public bool HasNewerCadVersion => IncludedDocuments.Any(d => d.IsNewerCadVersion);
+    public bool HasNewerCadVersion => NewDocuments.Any(d => d.IsNewerCadVersion);
 
     /// <summary>Можно ли ставить на учёт; <paramref name="allowMissing"/> — разрешить отсутствующие ссылки.</summary>
     public bool CanExecute(bool allowMissing) => !Problems.Any(p => p.IsBlocking && !(allowMissing && (p.Code is LocalProblemCodes.MissingReference or LocalProblemCodes.Unconfirmed)));
@@ -125,13 +171,20 @@ public sealed class ImportReport : IDisposable
     /// <summary>Пересчитать состав, относительные пути и проблемы по текущим решениям.</summary>
     public void Recompute()
     {
-        foreach (var d in Documents) d.IsIncluded = false;
+        foreach (var d in Documents)
+        {
+            d.IsIncluded = false;
+            d.Disposition = ImportDisposition.NotUsed;
+        }
         var queue = new Queue<ImportDocument>();
         void Add(ImportDocument d)
         {
             if (d.IsIncluded) return;
             d.IsIncluded = true;
-            queue.Enqueue(d);
+            var fromStorage = d.Existing != null && (!d.IsHead || AllowExistingHead);
+            d.Disposition = fromStorage ? ImportDisposition.FromStorage : ImportDisposition.New;
+            // Зависимости документа из хранилища уже зафиксированы в PDM его версией — дальше не идём.
+            if (!fromStorage) queue.Enqueue(d);
         }
         void Drain()
         {
@@ -141,7 +194,9 @@ public sealed class ImportReport : IDisposable
                 foreach (var r in d.References)
                 {
                     var t = r.EffectiveTarget;
-                    if (t != null && Find(t) is { } td) Add(td);
+                    if (t == null || Find(t) is not { } td || td == d) continue;
+                    if (td.Include || td.IsHead) Add(td);
+                    else if (!td.IsIncluded) td.Disposition = ImportDisposition.ByLink;
                 }
             }
         }
@@ -162,11 +217,30 @@ public sealed class ImportReport : IDisposable
                 }
             }
         } while (changed);
+        // Чертёж с комплекта, с которого сняли галочку, — тоже «по ссылке» (в постановку не попадёт).
+        foreach (var extra in Documents.Where(d => d.IsExtra && !d.Include && !d.IsIncluded))
+        {
+            if (extra.References.Any(r => r.EffectiveTarget != null && Find(r.EffectiveTarget) is { IsIncluded: true }))
+                extra.Disposition = ImportDisposition.ByLink;
+        }
 
         Problems.Clear();
-        var included = IncludedDocuments.ToList();
-        CommonRoot = CommonDirectory(included.Select(d => d.SourcePath));
-        if (CommonRoot == null)
+        if (Head.Existing is { } headExisting && !AllowExistingHead)
+        {
+            Problems.Add(new PlanProblem(ProblemSeverity.Error, LocalProblemCodes.AlreadyInStorage,
+                $"Головной документ «{Head.FileName}» уже учтён в PDM: {Describe(headExisting)}. Откройте его из PDM, а не ставьте на учёт повторно."));
+        }
+        var included = NewDocuments.ToList();
+        var byLink = ByLinkDocuments.ToList();
+        if (byLink.Count > 0)
+        {
+            Problems.Add(new PlanProblem(ProblemSeverity.Info, LocalProblemCodes.ByLink,
+                $"Не загружаются в PDM (галочка снята), останутся ссылками на файлы — CAD откроет их по ссылке: {byLink.Count}. " +
+                string.Join(", ", byLink.Take(5).Select(d => $"«{d.FileName}»")) + (byLink.Count > 5 ? " …" : string.Empty)));
+        }
+        foreach (var d in Documents.Where(d => !d.IsNew)) d.RelPath = string.Empty;
+        CommonRoot = included.Count == 0 ? null : CommonDirectory(included.Select(d => d.SourcePath));
+        if (CommonRoot == null && included.Count > 0)
         {
             Problems.Add(new PlanProblem(ProblemSeverity.Error, LocalProblemCodes.NoCommonRoot,
                 "Включённые файлы лежат на разных дисках — у них нет общей папки, относительные пути построить нельзя. Не подтверждайте ссылки за пределами папок или скопируйте эти файлы к проекту."));
@@ -177,6 +251,7 @@ public sealed class ImportReport : IDisposable
             if (CommonRoot != null)
             {
                 var rel = Path.GetRelativePath(CommonRoot, d.SourcePath).Replace('\\', '/');
+                if (RelPathPrefix.Length > 0) rel = RelPathPrefix.TrimEnd('/') + "/" + rel;
                 if (SolidBrew.Core.Paths.RelPath.TryNormalize(rel, out var norm, out var err)) d.RelPath = norm;
                 else Problems.Add(new PlanProblem(ProblemSeverity.Error, LocalProblemCodes.InvalidPath, err, rel));
             }
@@ -212,6 +287,14 @@ public sealed class ImportReport : IDisposable
                 }
             }
         }
+    }
+
+    /// <summary>«АБВ.001 v3, проект „Изделие“ (Детали/Корпус.sldprt)».</summary>
+    public static string Describe(VersionByHashDto v)
+    {
+        var d = v.Document;
+        var name = string.IsNullOrWhiteSpace(d.Designation) ? d.FileName : d.Designation;
+        return $"{name} v{v.Version}, проект «{d.ProjectName}» ({d.RelPath})";
     }
 
     internal static string? CommonDirectory(IEnumerable<string> files)

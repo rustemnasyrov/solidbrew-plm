@@ -515,6 +515,13 @@ public sealed class FakePdmApi : IPdmApi
     public Task<List<string>> GetMissingObjectsAsync(IEnumerable<string> hashes, CancellationToken ct = default) =>
         Run(() => hashes.Distinct().Where(h => !_s.Objects.ContainsKey(h)).ToList());
 
+    public Task<List<VersionByHashDto>> FindVersionsByHashAsync(IEnumerable<string> hashes, CancellationToken ct = default) => Run(() =>
+    {
+        var set = new HashSet<string>(hashes);
+        return _s.Docs.Values.SelectMany(d => d.Versions.Where(v => set.Contains(v.Sha256))
+            .Select(v => new VersionByHashDto { Sha256 = v.Sha256, Version = v.Number, Document = _s.Summary(d) })).ToList();
+    });
+
     public Task UploadObjectAsync(string sha256, Stream content, long size, IProgress<long>? progress, CancellationToken ct = default)
     {
         var ms = new MemoryStream();

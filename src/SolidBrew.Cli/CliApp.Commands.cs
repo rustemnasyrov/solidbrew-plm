@@ -29,10 +29,11 @@ public sealed partial class CliApp
         yield return new("where-used", "where-used <документ> [--version n]",
             "Где применяется версия документа (по умолчанию последняя); отмечает применения не последней версии.",
             none, new[] { "version" }, WhereUsedAsync);
-        yield return new("import", "import <головной файл> --project <имя|id> [--extra <папка>]... [--accept-name-matches] [--accept-outside] [--choose <ссылка>=<путь>]... [--allow-missing] [--accept-newer-cad] [--comment <текст>] [--yes]",
-            "Поставить на учёт готовый проект: исходники только читаются. Без --yes печатает отчёт по ссылкам и выходит с кодом 2.",
+        yield return new("import", "import <головной файл> --project <имя|id> [--extra <папка>]... [--accept-name-matches] [--accept-outside] [--choose <ссылка>=<путь>]... [--by-link <файл>]... [--allow-missing] [--accept-newer-cad] [--comment <текст>] [--yes]",
+            "Поставить на учёт готовый проект: исходники только читаются. Файлы, уже учтённые в PDM (то же содержимое), берутся из хранилища; " +
+            "--by-link — не загружать файл, оставить ссылкой на него. Без --yes печатает отчёт по ссылкам и выходит с кодом 2.",
             new[] { "accept-name-matches", "accept-outside", "allow-missing", "accept-newer-cad", "yes" },
-            new[] { "extra", "project", "choose", "comment" }, ImportAsync);
+            new[] { "extra", "project", "choose", "by-link", "comment" }, ImportAsync);
         yield return new("open", "open <документ> [--version n] [--to <папка>] [--with-drawings] [--replace-all|--keep-all] [--verify] [--yes]",
             "Открыть версию (по умолчанию последнюю): докачать в кэш и разложить комплект в рабочую папку. --with-drawings — вместе с чертежами документов комплекта. " +
             "Документы другого проекта кладутся в подпапку с именем проекта. При конфликтах без --yes печатает план и выходит с кодом 2.",

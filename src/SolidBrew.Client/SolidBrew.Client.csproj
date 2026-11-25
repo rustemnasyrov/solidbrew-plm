@@ -3,6 +3,14 @@
     <OutputType>WinExe</OutputType>
     <TargetFramework>net10.0-windows</TargetFramework>
     <UseWPF>true</UseWPF>
+    <!-- WinForms — только для встраивания элемента просмотра eDrawings (ActiveX); его глобальные using не нужны. -->
+    <UseWindowsForms>true</UseWindowsForms>
+    <!--
+      Без аппаратной защиты стека Intel CET (теневой стек). Запускатель .NET по умолчанию помечен как совместимый с CET,
+      и Windows включает теневой стек всему процессу; элемент просмотра eDrawings с ним несовместим — процесс аварийно
+      завершается (0xC0000409, FAST_FAIL_CONTROL_INVALID_RETURN_ADDRESS) при создании элемента. Проверено 25.11.2026, eDrawings 2026.
+    -->
+    <CetCompat>false</CetCompat>
     <AssemblyName>SolidBrew</AssemblyName>
     <RootNamespace>SolidBrew.Client</RootNamespace>
     <Product>SolidBrew PDM</Product>
@@ -19,5 +27,7 @@
   </ItemGroup>
   <ItemGroup>
     <InternalsVisibleTo Include="SolidBrew.Client.Tests" />
+    <Using Remove="System.Windows.Forms" />
+    <Using Remove="System.Drawing" />
   </ItemGroup>
 </Project>

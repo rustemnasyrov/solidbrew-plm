@@ -40,6 +40,16 @@ public sealed partial class CliApp
                 r.Chosen = candidate;
             }
         }
+        // --by-link <файл>: не загружать в PDM, оставить ссылкой на файл (имя файла или полный путь исходника).
+        foreach (var name in _args.Values("by-link"))
+        {
+            var full = Path.IsPathFullyQualified(name) ? Path.GetFullPath(name) : null;
+            var docs = report.Documents.Where(d => !d.IsHead && (full != null
+                ? string.Equals(d.SourcePath, full, StringComparison.OrdinalIgnoreCase)
+                : string.Equals(d.FileName, name, StringComparison.OrdinalIgnoreCase))).ToList();
+            if (docs.Count == 0) throw new CliException($"--by-link: среди документов постановки нет «{name}» (головной документ оставить ссылкой нельзя).");
+            foreach (var d in docs) d.Include = false;
+        }
         report.Recompute();
 
         var allowMissing = _args.Flag("allow-missing");
@@ -80,9 +90,11 @@ public sealed partial class CliApp
         head = report.HeadFile,
         searchFolders = report.SearchFolders,
         commonRoot = report.CommonRoot,
-        documents = report.IncludedDocuments.Select(d => new
+        documents = report.Documents.Where(d => d.Disposition != ImportDisposition.NotUsed).Select(d => new
         {
             d.SourcePath, d.RelPath, d.Cad, d.Kind, d.Designation, d.Name, d.Sha256, d.Size, d.CadVersion, d.IsHead, d.IsExtra,
+            d.Disposition,
+            existing = d.Existing == null ? null : new { documentId = d.Existing.Document.Id, version = d.Existing.Version, project = d.Existing.Document.ProjectName, relPath = d.Existing.Document.RelPath },
             references = d.References.Select(r => new { r.SavedPath, r.Category, r.TargetPath, r.Candidates, r.Accept, r.Chosen, target = r.EffectiveTarget }),
         }),
         problems = report.Problems,
@@ -94,10 +106,24 @@ public sealed partial class CliApp
         Out.WriteLine($"Головной документ: {report.HeadFile}");
         Out.WriteLine("Папки поиска: " + string.Join("; ", report.SearchFolders));
         if (report.CommonRoot != null) Out.WriteLine($"Общая папка (от неё считаются пути): {report.CommonRoot}");
-        var included = report.IncludedDocuments.ToList();
-        Out.WriteLine($"Документы ({included.Count}):");
+        var included = report.NewDocuments.ToList();
+        Out.WriteLine($"Загружаются новыми документами ({included.Count}):");
         foreach (var d in included.OrderBy(d => d.RelPath, StringComparer.OrdinalIgnoreCase))
-            Out.WriteLine($"  {d.RelPath}  [{KindText(d.Kind)}{(d.Designation != null ? ", " + d.Designation : "")}{(d.IsHead ? ", головной" : "")}{(d.IsExtra ? ", из доп. папки" : "")}]");
+            Out.WriteLine($"  {d.RelPath}  [{KindText(d.Kind)}{(d.Designation != null ? ", " + d.Designation : "")}{(d.IsHead ? ", головной" : "")}{(d.IsExtra ? ", чертёж из папок поиска" : "")}]");
+        var stored = report.FromStorageDocuments.ToList();
+        if (stored.Count > 0)
+        {
+            Out.WriteLine($"Уже есть в PDM — берутся из хранилища ({stored.Count}):");
+            foreach (var d in stored.OrderBy(d => d.SourcePath, StringComparer.OrdinalIgnoreCase))
+                Out.WriteLine($"  {d.SourcePath}  =  {ImportReport.Describe(d.Existing!)}");
+        }
+        var byLink = report.ByLinkDocuments.ToList();
+        if (byLink.Count > 0)
+        {
+            Out.WriteLine($"Не загружаются, остаются ссылками на файлы ({byLink.Count}):");
+            foreach (var d in byLink.OrderBy(d => d.SourcePath, StringComparer.OrdinalIgnoreCase))
+                Out.WriteLine($"  {d.SourcePath}");
+        }
 
         string From(ImportReference r) => $"{Path.GetFileName(r.SourceDocument)} → {r.SavedPath}";
         var refs = report.References.ToList();

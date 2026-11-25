@@ -133,6 +133,7 @@ public class CadAdapterRegistryTests
         public bool IsDocument(string path) => true;
         public DocumentKind KindOf(string path) => DocumentKind.Other;
         public Task<CadDocumentInfo> ReadAsync(string path, CancellationToken ct = default) => Task.FromResult(new CadDocumentInfo());
+        public Task<List<CadReference>> ReadReferencesAsync(string path, CancellationToken ct = default) => Task.FromResult(new List<CadReference>());
         public Task ReplaceReferencesAsync(string documentPath, IReadOnlyDictionary<string, string> oldToNew, CancellationToken ct = default) => Task.CompletedTask;
         public Task<OpenReport> OpenAndVerifyAsync(string headPath, string workRoot, CancellationToken ct = default) => Task.FromResult(new OpenReport());
     }

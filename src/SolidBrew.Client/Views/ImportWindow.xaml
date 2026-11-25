@@ -88,21 +88,22 @@
                 <TabItem Header="{Binding DocumentsHeader}">
                     <DataGrid ItemsSource="{Binding Documents}">
                         <DataGrid.Columns>
-                            <DataGridTemplateColumn Header="Включить" Width="70">
+                            <DataGridTemplateColumn Header="Загружать" Width="75">
                                 <DataGridTemplateColumn.CellTemplate>
                                     <DataTemplate>
                                         <CheckBox IsChecked="{Binding Include, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" HorizontalAlignment="Center"
-                                                  IsEnabled="{Binding IsExtra}" ToolTip="Для документов из дополнительных папок: ставить ли на учёт" />
+                                                  IsEnabled="{Binding CanToggle}"
+                                                  ToolTip="Загружать в PDM. Без галочки файл не загружается и остаётся ссылкой: CAD откроет его по пути из ссылки. Файл, уже учтённый в PDM, берётся из хранилища." />
                                     </DataTemplate>
                                 </DataGridTemplateColumn.CellTemplate>
                             </DataGridTemplateColumn>
-                            <DataGridTextColumn Header="Путь в хранилище" Binding="{Binding RelPath}" Width="2*" />
+                            <DataGridTextColumn Header="Путь в хранилище / исходник" Binding="{Binding RelPath}" Width="2*" />
                             <DataGridTextColumn Header="Обозначение" Binding="{Binding Designation}" Width="*" />
                             <DataGridTextColumn Header="Наименование" Binding="{Binding Name}" Width="*" />
                             <DataGridTextColumn Header="Вид" Binding="{Binding KindText}" Width="Auto" />
                             <DataGridTextColumn Header="Откуда" Binding="{Binding RoleText}" Width="Auto" />
                             <DataGridTextColumn Header="Версия CAD" Binding="{Binding CadVersion}" Width="Auto" />
-                            <DataGridCheckBoxColumn Header="В постановке" Binding="{Binding IsIncluded, Mode=OneWay}" Width="Auto" />
+                            <DataGridTextColumn Header="Что будет" Binding="{Binding DispositionText}" Width="1.5*" />
                             <DataGridTextColumn Header="Ошибка чтения" Binding="{Binding ReadError}" Width="*" />
                         </DataGrid.Columns>
                     </DataGrid>

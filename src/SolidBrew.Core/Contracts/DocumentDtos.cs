@@ -108,4 +108,23 @@ namespace SolidBrew.Core.Contracts
     {
         public List<string> Missing { get; set; } = new List<string>();
     }
+
+    /// <summary>Какие опубликованные версии имеют это содержимое (SHA-256).</summary>
+    public sealed class VersionsByHashRequest
+    {
+        public List<string> Hashes { get; set; } = new List<string>();
+    }
+
+    public sealed class VersionsByHashResponse
+    {
+        public List<VersionByHashDto> Items { get; set; } = new List<VersionByHashDto>();
+    }
+
+    /// <summary>Опубликованная версия с данным содержимым и её документ.</summary>
+    public sealed class VersionByHashDto
+    {
+        public string Sha256 { get; set; } = string.Empty;
+        public int Version { get; set; }
+        public DocumentSummaryDto Document { get; set; } = new DocumentSummaryDto();
+    }
 }

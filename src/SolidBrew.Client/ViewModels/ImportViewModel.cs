@@ -11,21 +11,34 @@ namespace SolidBrew.Client.ViewModels;
 /// Экран «Постановка на учёт» (6.1 п. 6, 7.1): головной файл, доп. папки поиска, отчёт по категориям ссылок,
 /// решения (подтвердить / выбрать вариант), проект, комментарий.
 /// </summary>
+/// <summary>
+/// Постановка файла, оставленного ссылкой: головной файл задан, новые документы кладутся в папку проекта
+/// <see cref="RelPathPrefix"/>, уже учтённое содержимое берётся из хранилища.
+/// </summary>
+public sealed record ImportPreset(string HeadFile, string RelPathPrefix, string ParentLabel);
+
 public sealed partial class ImportViewModel : DialogViewModel
 {
     private readonly AppSession _session;
     private readonly Guid? _preferredProject;
+    private readonly ImportPreset? _preset;
     private readonly Dictionary<ImportReference, ImportReferenceRow> _refRows = new();
     private readonly Dictionary<ImportDocument, ImportDocumentRow> _docRows = new();
     private bool _executed;
 
-    public ImportViewModel(AppSession session, Guid? preferredProject = null) : base(session.Services.Dialogs)
+    public ImportViewModel(AppSession session, Guid? preferredProject = null, ImportPreset? preset = null, string? headFile = null) : base(session.Services.Dialogs)
     {
         _session = session;
         _preferredProject = preferredProject;
+        _preset = preset;
+        if (preset != null) HeadFile = preset.HeadFile;
+        else if (!string.IsNullOrWhiteSpace(headFile)) HeadFile = headFile;
+        _analyzeOnStart = preset != null || !string.IsNullOrWhiteSpace(headFile);
     }
 
-    public override string Title => "Поставить на учёт";
+    private readonly bool _analyzeOnStart;
+
+    public override string Title => _preset == null ? "Поставить на учёт" : $"Поставить на учёт и привязать к {_preset.ParentLabel}";
 
     private WorkspaceService Workspace => _session.Workspace;
 
@@ -74,7 +87,8 @@ public sealed partial class ImportViewModel : DialogViewModel
     public string NameOnlyHeader => $"Совпали только по имени ({NameOnly.Count})";
     public string AmbiguousHeader => $"Неоднозначно ({Ambiguous.Count})";
     public string MissingHeader => $"Отсутствуют ({Missing.Count})";
-    public string DocumentsHeader => $"Документы ({Documents.Count(d => d.IsIncluded)} к постановке)";
+    public string DocumentsHeader => Report == null ? "Документы" :
+        $"Документы (загрузить {Report.NewDocuments.Count()}, из хранилища {Report.FromStorageDocuments.Count()}, по ссылке {Report.ByLinkDocuments.Count()})";
 
     public override async Task InitializeAsync()
     {
@@ -84,6 +98,12 @@ public sealed partial class ImportViewModel : DialogViewModel
             .OrderBy(p => p.Kind).ThenBy(p => p.Name, StringComparer.CurrentCultureIgnoreCase).ToList();
         Projects.ReplaceWith(projects);
         SelectedProject = projects.FirstOrDefault(p => p.Id == _preferredProject) ?? (projects.Count == 1 ? projects[0] : null);
+        if (_analyzeOnStart)
+        {
+            // Файл задан — сразу отчёт (для файла «по ссылке» документы ложатся рядом с родителем).
+            await AnalyzeAsync();
+            return;
+        }
         Busy.Done("Выберите головной документ и, при необходимости, папки с чертежами.");
     }
 
@@ -118,7 +138,8 @@ public sealed partial class ImportViewModel : DialogViewModel
     {
         var head = HeadFile.Trim();
         var folders = ExtraFolders.ToList();
-        var outcome = await Busy.RunAsync("Чтение исходников", (p, ct) => Workspace.PrepareImportAsync(head, folders, p, ct));
+        var options = _preset == null ? null : new ImportOptions { RelPathPrefix = _preset.RelPathPrefix, AllowExistingHead = true };
+        var outcome = await Busy.RunAsync("Чтение исходников", (p, ct) => Workspace.PrepareImportAsync(head, folders, p, ct, options));
         if (!outcome.Ok) return;
         Report?.Dispose();
         _refRows.Clear();
@@ -161,13 +182,14 @@ public sealed partial class ImportViewModel : DialogViewModel
             row.Refresh();
             return row;
         }
-        Documents.ReplaceWith(report.Documents.Where(d => d.IsIncluded || d.IsExtra)
-            .OrderByDescending(d => d.IsHead).ThenBy(d => d.IsExtra).ThenBy(d => d.RelPath.Length == 0 ? d.SourcePath : d.RelPath, StringComparer.OrdinalIgnoreCase)
+        // Порядок строк постоянный (по пути исходника), чтобы галочка не «прыгала» после щелчка.
+        Documents.ReplaceWith(report.Documents.Where(d => d.Disposition != ImportDisposition.NotUsed || d.IsExtra)
+            .OrderByDescending(d => d.IsHead).ThenBy(d => d.IsExtra).ThenBy(d => d.SourcePath, StringComparer.OrdinalIgnoreCase)
             .Select(DocRow));
         Problems.ReplaceWith(ProblemItem.From(report.Problems));
 
-        var included = report.IncludedDocuments.Count();
-        Summary = $"К постановке документов: {included}. Ссылки: найдены {Found.Count}, за пределами папок {Outside.Count}, только по имени {NameOnly.Count}, " +
+        Summary = $"Загрузить в PDM: {report.NewDocuments.Count()}, взять из хранилища: {report.FromStorageDocuments.Count()}, оставить ссылкой: {report.ByLinkDocuments.Count()}. " +
+                  $"Ссылки: найдены {Found.Count}, за пределами папок {Outside.Count}, только по имени {NameOnly.Count}, " +
                   $"неоднозначно {Ambiguous.Count}, отсутствуют {Missing.Count}." +
                   (report.CommonRoot != null ? $" Общая папка: {report.CommonRoot}." : string.Empty);
         foreach (var name in new[] { nameof(FoundHeader), nameof(OutsideHeader), nameof(NameOnlyHeader), nameof(AmbiguousHeader), nameof(MissingHeader), nameof(DocumentsHeader) })
@@ -198,7 +220,7 @@ public sealed partial class ImportViewModel : DialogViewModel
             if (!Dialogs.Confirm("Версия CAD новее рабочей",
                     "Некоторые файлы сохранены в версии CAD новее рабочей версии предприятия. Коллеги с рабочей версией не смогут их открыть. Всё равно поставить на учёт?",
                     "Поставить на учёт", "Отмена",
-                    report.IncludedDocuments.Where(d => d.IsNewerCadVersion).Select(d => $"«{d.FileName}» — {d.CadVersion}")))
+                    report.NewDocuments.Where(d => d.IsNewerCadVersion).Select(d => $"«{d.FileName}» — {d.CadVersion}")))
                 return;
             acceptNewer = true;
         }
@@ -216,6 +238,11 @@ public sealed partial class ImportViewModel : DialogViewModel
         _executed = true;
         Result = result;
         Busy.Done(result.Message);
+        if (_preset != null)
+        {
+            Close(true); // дальше привязка ссылки родителя — её делает вызывающий
+            return;
+        }
         OpenAfter = Dialogs.Confirm("Поставлено на учёт",
             $"{result.Message}\nОткрыть его как изделие (v{result.HeadVersion}, с чертежами)?", "Открыть", "Не сейчас");
         Close(true);
@@ -308,10 +335,21 @@ public sealed partial class ImportDocumentRow : ObservableObject
     public bool IsIncluded => Document.IsIncluded;
     public bool IsExtra => Document.IsExtra;
     public string? ReadError => Document.ReadError;
+    /// <summary>Галочку можно снять у любого документа, кроме головного.</summary>
+    public bool CanToggle => !Document.IsHead;
 
-    public string RoleText => Document.IsHead ? "головной" : Document.IsExtra ? "из доп. папки" : "по ссылке";
+    public string RoleText => Document.IsHead ? "головной" : Document.IsExtra ? "чертёж из папок поиска" : "компонент";
 
-    /// <summary>Отметка для документов из доп. папок.</summary>
+    /// <summary>Что будет с документом.</summary>
+    public string DispositionText => Document.Disposition switch
+    {
+        ImportDisposition.New => "загрузится в PDM",
+        ImportDisposition.FromStorage => "уже в PDM, берётся из хранилища: " + ImportReport.Describe(Document.Existing!),
+        ImportDisposition.ByLink => "не загружается, CAD откроет по ссылке",
+        _ => Document.IsExtra && !Document.Include ? "не загружается" : "не используется",
+    };
+
+    /// <summary>Галочка «загружать». Без неё файл не загружается в PDM и остаётся ссылкой.</summary>
     public bool Include
     {
         get => Document.Include;
@@ -329,5 +367,6 @@ public sealed partial class ImportDocumentRow : ObservableObject
         OnPropertyChanged(nameof(IsIncluded));
         OnPropertyChanged(nameof(RelPath));
         OnPropertyChanged(nameof(Include));
+        OnPropertyChanged(nameof(DispositionText));
     }
 }

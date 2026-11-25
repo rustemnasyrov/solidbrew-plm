@@ -111,6 +111,132 @@ public sealed class ProductWindowTests : IDisposable
     }
 
     [Fact]
+    public async Task Start_WithoutProduct_TreeListsAllProducts_ExpandingOneOpensIt()
+    {
+        var s = _env.Session("ivanov");
+        var head = await _env.ImportAsync(s);
+        var vm = new ProductWindowViewModel(s);
+
+        // Без окна выбора: в дереве — все изделия, пока не открытые.
+        await vm.StartAsync(null);
+        Assert.False(vm.HasProduct);
+        var stub = Assert.Single(vm.Tree.Roots);
+        Assert.True(stub.IsProductStub);
+        Assert.Equal("АБВ.000", stub.Title);
+        Assert.False(stub.HasProblem);
+        Assert.Equal(0, vm.Tree.ProblemCount);
+
+        // Правый щелчок по пустому месту / по изделию — «Добавить проект…»; у заглушки — «Открыть как изделие».
+        vm.Tree.Select(stub);
+        Assert.Equal(new[] { NodeActionKind.OpenAsProduct }, vm.Panel.PrimaryKinds);
+        Assert.Contains(vm.Panel.MenuActions, a => a.Kind == NodeActionKind.AddProject);
+
+        // Раскрытие стрелкой открывает изделие; заглушка заменяется деревом его состава.
+        _env.Dialogs.ChooseAnswers.Enqueue(0);
+        stub.IsExpanded = true;
+        await vm.PendingRefresh;
+        for (var i = 0; i < 100 && vm.Tree.Root == null; i++) await Task.Delay(20);
+        Assert.True(vm.HasProduct, _env.Dialogs.AllErrors);
+        Assert.Equal(head, vm.Product!.DocumentId);
+        var root = Assert.Single(vm.Tree.Roots);
+        Assert.False(root.IsProductStub);
+        Assert.Same(vm.Tree.Root, root);
+        Assert.Contains(vm.Tree.AllNodes(), n => n.Title == "АБВ.001");
+    }
+
+    [Theory]
+    [InlineData("ДТНЕ.301222.001 Кронштейн освещения нижний.SLDASM", null, "ДТНЕ.301222.001 Кронштейн освещения нижний.SLDASM")]
+    [InlineData("АБВ.000", "Изделие", "изделие.sldasm")]
+    public void ProductStub_IconFile_FromTitleOrDefaultAssembly(string designation, string? name, string expected)
+    {
+        var stub = new ProductNodeViewModel(new ProductItem(Guid.NewGuid(), designation, name, ProductItem.RecentGroup), new ProductTreeViewModel());
+        Assert.Equal(expected, stub.IconFile);
+    }
+
+    [Fact]
+    public async Task StatusDots_GreenBlueRed_AndYellowPropagatesToAssembliesAndDrawings()
+    {
+        var (_, vm, _) = await OpenProductAsync();
+        Assert.All(vm.Tree.AllNodes().Where(n => n.IsDocument), n => Assert.Equal(StatusDot.InStorage, n.StatusDot));
+
+        await SelectAsync(vm, Node(vm, "АБВ.001")); // Корпус (у него чертёж АБВ.001 СБ)
+        await RunAsync(vm, vm.CheckOutCommand);
+        Assert.Equal(StatusDot.Mine, Node(vm, "АБВ.001").StatusDot);
+        Assert.Equal(StatusDot.InStorage, Node(vm, "АБВ.000").StatusDot);
+
+        TestCadWriter.AppendGeometry(Path.Combine(vm.Flow.WorkRoot!, "Детали", "Корпус.tcprt"), "правка");
+        await vm.RefreshAsync();
+        Assert.Equal(StatusDot.MineModified, Node(vm, "АБВ.001").StatusDot);
+        Assert.Equal(StatusDot.NeedsResave, Node(vm, "АБВ.000").StatusDot);    // сборка с изменённой деталью
+        Assert.Equal(StatusDot.NeedsResave, Node(vm, "АБВ.001 СБ").StatusDot); // чертёж изменённой детали
+        Assert.Equal(StatusDot.InStorage, Node(vm, "АБВ.002").StatusDot);      // Вал не затронут
+        Assert.Contains("пересохраните", Node(vm, "АБВ.000").StatusDotText);
+        Assert.Equal("надо пересохранить", Node(vm, "АБВ.000").StateText); // метка в конце строки — тоже жёлтая
+        Assert.Equal("изменён", Node(vm, "АБВ.001").StateText);
+        Assert.Contains("чертёж", Node(vm, "АБВ.001 СБ").StatusDotText);
+    }
+
+    [Fact]
+    public async Task StatusDots_PartCheckedInAlone_DrawingAndAssemblyYellow_DrawingResaved_Green()
+    {
+        var (s, vm, _) = await OpenProductAsync();
+        var root = vm.Flow.WorkRoot!;
+
+        async Task CheckinOnlyAsync(string relPath)
+        {
+            var plan = await s.Workspace.PrepareCheckinAsync(root);
+            foreach (var i in plan.Items) i.Include = string.Equals(i.RelPath, relPath, StringComparison.OrdinalIgnoreCase);
+            plan.Revalidate();
+            var r = await s.Workspace.ExecuteCheckinAsync(plan, "правка");
+            Assert.True(r.Success, r.Message + string.Join("\n", r.Problems));
+            await vm.RefreshAsync();
+        }
+
+        // Деталь изменили и сдали одну: она зелёная, а чертёж и сборка ссылаются на старую версию — жёлтые.
+        await SelectAsync(vm, Node(vm, "АБВ.001"));
+        await RunAsync(vm, vm.CheckOutCommand);
+        TestCadWriter.AppendGeometry(Path.Combine(root, "Детали", "Корпус.tcprt"), "правка");
+        await CheckinOnlyAsync("Детали/Корпус.tcprt");
+        Assert.Equal(StatusDot.InStorage, Node(vm, "АБВ.001").StatusDot);
+        Assert.Equal(StatusDot.NeedsResave, Node(vm, "АБВ.001 СБ").StatusDot);
+        Assert.Equal(StatusDot.NeedsResave, Node(vm, "АБВ.000").StatusDot);
+
+        // Чертёж пересохранили с новой моделью и сдали — зелёный; сборка всё ещё держит старую деталь — жёлтая.
+        await SelectAsync(vm, Node(vm, "АБВ.001 СБ"));
+        await RunAsync(vm, vm.CheckOutCommand);
+        TestCadWriter.AppendGeometry(Path.Combine(root, "Чертежи", "Корпус.tcdrw"), "пересохранён");
+        await CheckinOnlyAsync("Чертежи/Корпус.tcdrw");
+        Assert.Equal(StatusDot.InStorage, Node(vm, "АБВ.001 СБ").StatusDot);
+        Assert.False(Node(vm, "АБВ.001 СБ").HasProblem);
+        Assert.Equal(StatusDot.NeedsResave, Node(vm, "АБВ.000").StatusDot);
+    }
+
+    [Fact]
+    public async Task SavedInCad_TreeUpdatesItself_CheckinAppears()
+    {
+        var (_, vm, _) = await OpenProductAsync();
+        try
+        {
+            await SelectAsync(vm, Node(vm, "АБВ.002"));
+            await RunAsync(vm, vm.CheckOutCommand);
+            Assert.Equal(new[] { NodeActionKind.OpenInCad, NodeActionKind.UndoCheckOut }, vm.Panel.PrimaryKinds);
+
+            // «Сохранили в CAD»: без F5 и без команд дерево обновляется само.
+            TestCadWriter.AppendGeometry(Path.Combine(vm.Flow.WorkRoot!, "Детали", "Вал.tcprt"), "правка в CAD");
+            for (var i = 0; i < 100 && !Node(vm, "АБВ.002").IsModified; i++) await Task.Delay(50);
+            await vm.PendingRefresh;
+            Assert.True(Node(vm, "АБВ.002").IsModified);
+            Assert.Equal(1, vm.CheckinCount);
+            await SelectAsync(vm, Node(vm, "АБВ.002"));
+            Assert.Contains(NodeActionKind.Checkin, vm.Panel.PrimaryKinds);
+        }
+        finally
+        {
+            vm.Dispose();
+        }
+    }
+
+    [Fact]
     public async Task Open_FolderChoiceCancelled_NothingOpened()
     {
         var s = _env.Session("ivanov");
@@ -391,7 +517,9 @@ public sealed class ProductWindowTests : IDisposable
         await SelectAsync(vm, Node(vm, "АБВ.002"));
         Assert.Equal(new[] { NodeActionKind.OpenInCad, NodeActionKind.CheckOut }, vm.Panel.PrimaryKinds);
         Assert.Equal(new[] { NodeActionKind.Rename, NodeActionKind.WhereUsed, NodeActionKind.MarkUnused, NodeActionKind.ShowInExplorer }, vm.Panel.MoreKinds);
-        Assert.Equal(vm.Panel.PrimaryActions.Count + vm.Panel.MoreActions.Count, vm.Panel.MenuActions.Count);
+        // Контекстное меню: действия узла и всегда «Добавить проект…».
+        Assert.Equal(vm.Panel.PrimaryActions.Count + vm.Panel.MoreActions.Count + 1, vm.Panel.MenuActions.Count);
+        Assert.Equal(NodeActionKind.AddProject, vm.Panel.MenuActions[^1].Kind);
 
         // Взят мной: «Отменить взятие»; после правки — ещё «Сдать».
         await RunAsync(vm, vm.CheckOutCommand);

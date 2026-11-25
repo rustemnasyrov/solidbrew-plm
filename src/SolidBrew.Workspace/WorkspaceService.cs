@@ -31,11 +31,15 @@ public sealed partial class WorkspaceService
         Adapters = adapters ?? throw new ArgumentNullException(nameof(adapters));
         Cache = cache ?? throw new ArgumentNullException(nameof(cache));
         _options = options ?? new WorkspaceServiceOptions();
+        ReadCache = new CadReadCache(Path.Combine(cache.Root, "cadinfo"));
     }
 
     public IPdmApi Api { get; }
     public CadAdapterRegistry Adapters { get; }
     public LocalCache Cache { get; }
+
+    /// <summary>Кэш свойств CAD-файлов по SHA-256 (рядом с кэшем объектов).</summary>
+    public CadReadCache ReadCache { get; }
 
     // ------------------------------------------------------------------ рабочая папка
 
@@ -107,6 +111,87 @@ public sealed partial class WorkspaceService
     internal ICadAdapter AdapterFor(string cad, string path) =>
         Adapters.Get(cad) ?? Adapters.FindFor(path) ??
         throw new WorkspaceException($"Нет адаптера CAD для документа «{Path.GetFileName(path)}» ({cad}). Установите поддержку этого CAD.");
+
+    /// <summary>
+    /// Прочитать документ CAD с кэшем свойств: если свойства файла с хешем <paramref name="sha256"/> уже читались,
+    /// адаптер читает только ссылки (в SOLIDWORKS — без открытия документа). Иначе полное чтение, результат запоминается,
+    /// если файл не менялся во время чтения.
+    /// </summary>
+    internal async Task<CadDocumentInfo> ReadCadAsync(ICadAdapter adapter, string fullPath, string? sha256, CancellationToken ct)
+    {
+        var kind = adapter.KindOf(fullPath);
+        if (string.IsNullOrEmpty(sha256) || !(CadReadCache.IsCacheable(kind) || kind == DocumentKind.Drawing))
+            return await adapter.ReadAsync(fullPath, ct).ConfigureAwait(false);
+
+        // Чертёж: свойства бывают связаны со свойствами модели, поэтому ключ — хеш чертежа и хеши файлов, на которые он ссылается.
+        List<CadReference>? refs = null;
+        var key = sha256!;
+        if (kind == DocumentKind.Drawing)
+        {
+            refs = await adapter.ReadReferencesAsync(fullPath, ct).ConfigureAwait(false);
+            key = await DrawingCacheKeyAsync(fullPath, sha256!, refs, ct).ConfigureAwait(false);
+        }
+
+        if (ReadCache.TryGet(adapter.CadId, key) is { } cached)
+        {
+            cached.Path = fullPath;
+            cached.Kind = kind;
+            cached.References = refs ?? await adapter.ReadReferencesAsync(fullPath, ct).ConfigureAwait(false);
+            return cached;
+        }
+
+        var before = FileOps.StampOf(fullPath);
+        var info = await adapter.ReadAsync(fullPath, ct).ConfigureAwait(false);
+        if (before != null && before.SameAs(FileOps.StampOf(fullPath)))
+            ReadCache.Put(adapter.CadId, key, info);
+        return info;
+    }
+
+    /// <summary>
+    /// Ключ кэша чертежа: SHA-256 от хеша чертежа и пар «путь ссылки — хеш файла, который по ней найден».
+    /// Файл ищется как в CAD: по пути из ссылки, затем с тем же именем в папке чертежа; не найден — отметка «нет файла».
+    /// </summary>
+    private async Task<string> DrawingCacheKeyAsync(string drawingPath, string drawingSha, List<CadReference> refs, CancellationToken ct)
+    {
+        var sb = new System.Text.StringBuilder("drawing:").Append(drawingSha).Append('\n');
+        var dir = Path.GetDirectoryName(drawingPath)!;
+        foreach (var r in refs.OrderBy(r => r.SavedPath, StringComparer.OrdinalIgnoreCase))
+        {
+            string? file = null;
+            try
+            {
+                if (Path.IsPathFullyQualified(r.SavedPath) && File.Exists(r.SavedPath)) file = Path.GetFullPath(r.SavedPath);
+                else if (r.FileName.Length > 0 && File.Exists(Path.Combine(dir, r.FileName))) file = Path.Combine(dir, r.FileName);
+            }
+            catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+            {
+            }
+            var hash = file == null ? "-" : await HashCachedAsync(file, ct).ConfigureAwait(false) ?? "-";
+            sb.Append(r.SavedPath.ToUpperInvariant()).Append('|').Append(hash).Append('\n');
+        }
+        using var keyStream = new MemoryStream(System.Text.Encoding.UTF8.GetBytes(sb.ToString()));
+        return SolidBrew.Core.Hashing.Sha256Hex.Compute(keyStream);
+    }
+
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, (FileStamp Stamp, string Sha)> _hashes = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>Хеш файла с запоминанием по размеру и времени изменения (модели общие для многих чертежей). Ошибка чтения — null.</summary>
+    private async Task<string?> HashCachedAsync(string path, CancellationToken ct)
+    {
+        var stamp = FileOps.StampOf(path);
+        if (stamp == null) return null;
+        if (_hashes.TryGetValue(path, out var known) && known.Stamp.SameAs(stamp)) return known.Sha;
+        try
+        {
+            var sha = await FileOps.HashAsync(path, ct).ConfigureAwait(false);
+            if (stamp.SameAs(FileOps.StampOf(path))) _hashes[path] = (stamp, sha);
+            return sha;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return null;
+        }
+    }
 
     /// <summary>Наибольший limit поиска, который принимает сервер (больше он молча ограничивает).</summary>
     internal const int ServerSearchLimit = 2000;

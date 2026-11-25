@@ -34,13 +34,16 @@
             <!-- Узел дерева изделия: значок, обозначение, наименование, метка состояния (только если не «свободен»). -->
             <HierarchicalDataTemplate DataType="{x:Type vm:ProductNodeViewModel}" ItemsSource="{Binding Children}">
                 <StackPanel Orientation="Horizontal" Margin="0,3" ToolTip="{Binding ToolTip}" ToolTipService.InitialShowDelay="700">
-                    <TextBlock x:Name="Glyph" Style="{StaticResource Icon}" Text="{Binding Glyph}" Foreground="{StaticResource MutedBrush}" Margin="0,0,7,0" />
-                    <Border x:Name="Hl" CornerRadius="2" Padding="2,0">
+                    <inf:FileIcon x:Name="Glyph" FileName="{Binding IconFile}" Glyph="{Binding Glyph}" IconSize="16"
+                                  Foreground="{StaticResource MutedBrush}" Margin="0,0,4,0" />
+                    <!-- Кружок состояния: красный — изменён, жёлтый — пересохранить, синий — взят мной, зелёный — в хранилище -->
+                    <Ellipse x:Name="Dot" Width="8" Height="8" Margin="0,0,6,0" VerticalAlignment="Center"
+                             Fill="{Binding StatusDot, Converter={StaticResource DotBrush}}" ToolTip="{Binding StatusDotText}" />                    <Border x:Name="Hl" CornerRadius="2" Padding="2,0">
                         <TextBlock x:Name="TitleText" Text="{Binding Title}" />
                     </Border>
                     <TextBlock Text="{Binding Subtitle}" Foreground="{StaticResource MutedBrush}" Margin="6,0,0,0" />
                     <StackPanel Orientation="Horizontal" Margin="10,0,0,0" Visibility="{Binding HasState, Converter={StaticResource BoolVis}}">
-                        <Ellipse Width="8" Height="8" Fill="{Binding Mark, Converter={StaticResource MarkBrush}}" Margin="0,0,5,0" VerticalAlignment="Center" />
+                        <Ellipse x:Name="StateDot" Width="8" Height="8" Fill="{Binding StatusDot, Converter={StaticResource DotBrush}}" Margin="0,0,5,0" VerticalAlignment="Center" />
                         <TextBlock Text="{Binding StateText}" FontSize="12" Foreground="{StaticResource MutedBrush}" VerticalAlignment="Center" />
                     </StackPanel>
                 </StackPanel>
@@ -50,10 +53,15 @@
                     </DataTrigger>
                     <DataTrigger Binding="{Binding IsGroup}" Value="True">
                         <Setter TargetName="TitleText" Property="FontWeight" Value="SemiBold" />
-                        <Setter TargetName="Glyph" Property="Foreground" Value="#7B1FA2" />
+                        <Setter TargetName="Glyph" Property="Foreground" Value="#00897B" />
                     </DataTrigger>
                     <DataTrigger Binding="{Binding Type}" Value="Draft">
-                        <Setter TargetName="Glyph" Property="Foreground" Value="#7B1FA2" />
+                        <Setter TargetName="Glyph" Property="Foreground" Value="#00897B" />
+                    </DataTrigger>
+                    <DataTrigger Binding="{Binding StatusDot}" Value="None">
+                        <Setter TargetName="Dot" Property="Visibility" Value="Collapsed" />
+                        <!-- черновик, ссылка вне PDM: у метки в конце строки — прежний цвет состояния -->
+                        <Setter TargetName="StateDot" Property="Fill" Value="{Binding Mark, Converter={StaticResource MarkBrush}}" />
                     </DataTrigger>
                 </HierarchicalDataTemplate.Triggers>
             </HierarchicalDataTemplate>
@@ -81,11 +89,8 @@
                                 <MenuItem Header="Выгрузить комплект…" Command="{Binding ExportCommand}">
                                     <MenuItem.Icon><TextBlock Style="{StaticResource Icon}" Text="&#xE7B8;" /></MenuItem.Icon>
                                 </MenuItem>
-                                <MenuItem Header="Поставить на учёт…" Command="{Binding ImportCommand}" Visibility="{Binding CanModify, Converter={StaticResource BoolVis}}">
-                                    <MenuItem.Icon><TextBlock Style="{StaticResource Icon}" Text="&#xE8B5;" /></MenuItem.Icon>
-                                </MenuItem>
-                                <MenuItem Header="Другое изделие…" Command="{Binding ChangeProductCommand}">
-                                    <MenuItem.Icon><TextBlock Style="{StaticResource Icon}" Text="&#xE8F1;" /></MenuItem.Icon>
+                                <MenuItem Header="Добавить проект…" Command="{Binding AddProjectCommand}" Visibility="{Binding CanModify, Converter={StaticResource BoolVis}}">
+                                    <MenuItem.Icon><TextBlock Style="{StaticResource Icon}" Text="&#xE710;" /></MenuItem.Icon>
                                 </MenuItem>
                                 <MenuItem Header="Новое окно" Command="{Binding NewWindowCommand}">
                                     <MenuItem.Icon><TextBlock Style="{StaticResource Icon}" Text="&#xE8A7;" /></MenuItem.Icon>
@@ -133,7 +138,6 @@
                                                Visibility="{Binding Switcher.Query, Converter={StaticResource NullVis}, ConverterParameter=invert}" />
                                 </Grid>
                                 <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" Margin="0,6,0,0">
-                                    <Button Style="{StaticResource FlatButton}" Tag="&#xE8F1;" Content="Все изделия…" Command="{Binding ChangeProductCommand}" />
                                     <Button Style="{StaticResource FlatButton}" Tag="&#xE8A7;" Content="Новое окно" Command="{Binding NewWindowCommand}" />
                                 </StackPanel>
                                 <TextBlock DockPanel.Dock="Bottom" Text="{Binding Switcher.StatusText}" Style="{StaticResource Muted}" Margin="4,4,0,0"
@@ -230,19 +234,8 @@
         </Border>
 
         <Grid>
-            <!-- Изделие не выбрано -->
-            <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center" MaxWidth="520"
-                        Visibility="{Binding HasProduct, Converter={StaticResource BoolVis}, ConverterParameter=invert}">
-                <TextBlock Style="{StaticResource Icon}" Text="&#xE8F1;" FontSize="40" Foreground="{StaticResource MutedBrush}" HorizontalAlignment="Center" />
-                <TextBlock Text="{Binding EmptyText}" Style="{StaticResource Header}" HorizontalAlignment="Center" TextAlignment="Center" Margin="0,12,0,12" />
-                <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
-                    <Button Style="{StaticResource PrimaryButton}" Tag="&#xE8F1;" Content="Выбрать изделие…" Command="{Binding ChangeProductCommand}" />
-                    <Button Style="{StaticResource IconButton}" Tag="&#xE8B5;" Content="Поставить на учёт новое изделие" Command="{Binding ImportCommand}"
-                            Visibility="{Binding CanModify, Converter={StaticResource BoolVis}}" />
-                </StackPanel>
-            </StackPanel>
-
-            <Grid Visibility="{Binding HasProduct, Converter={StaticResource BoolVis}}">
+            <!-- Дерево всех изделий слева; изделие открывается раскрытием, отдельного окна выбора нет. -->
+            <Grid>
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="430" MinWidth="260" />
                     <ColumnDefinition Width="Auto" />
@@ -264,7 +257,15 @@
                         <Button Style="{StaticResource GlyphButton}" Content="&#xE711;" HorizontalAlignment="Right" Padding="6,2" Margin="0,0,2,0"
                                 Command="{Binding Tree.ClearFilterCommand}" ToolTip="Сбросить фильтр и отборы"
                                 Visibility="{Binding Tree.IsFiltered, Converter={StaticResource BoolVis}}" />
-                        <TextBlock Grid.Column="1" Style="{StaticResource Icon}" Text="&#xE946;" Foreground="{StaticResource MutedBrush}" Margin="8,0,0,0"
+                        <StackPanel Grid.Column="1" Orientation="Horizontal" Margin="6,0,0,0">
+                            <Button Style="{StaticResource GlyphButton}" Content="&#xE710;" Command="{Binding AddProjectCommand}"
+                                    ToolTip="Добавить проект: выбрать сборку SOLIDWORKS и поставить её на учёт" Margin="0,0,2,0"
+                                    Visibility="{Binding CanModify, Converter={StaticResource BoolVis}}" />
+                            <Button Style="{StaticResource GlyphButton}" Content="&#xE70D;" Command="{Binding Tree.ExpandAllCommand}"
+                                    ToolTip="Развернуть всё дерево" />
+                            <Button Style="{StaticResource GlyphButton}" Content="&#xE70E;" Command="{Binding Tree.CollapseAllCommand}"
+                                    ToolTip="Свернуть всё дерево (до первого уровня)" Margin="2,0,0,0" />
+                        <TextBlock Style="{StaticResource Icon}" Text="&#xE946;" Foreground="{StaticResource MutedBrush}" Margin="8,0,0,0"
                                    ToolTipService.InitialShowDelay="100" ToolTipService.ShowDuration="30000">
                             <TextBlock.ToolTip>
                                 <StackPanel Margin="2">
@@ -274,6 +275,7 @@
                                 </StackPanel>
                             </TextBlock.ToolTip>
                         </TextBlock>
+                        </StackPanel>
                     </Grid>
                     <WrapPanel DockPanel.Dock="Top" Margin="12,0,12,4">
                         <ToggleButton Style="{StaticResource PillToggle}" IsChecked="{Binding Tree.ShowMine}" ToolTip="Документы, взятые мной в работу">
@@ -295,6 +297,9 @@
                     <TreeView x:Name="NodeTree" ItemsSource="{Binding Tree.Roots}" BorderThickness="0" Background="{StaticResource PanelBrush}" Padding="6,0,0,6"
                               VirtualizingPanel.IsVirtualizing="True" VirtualizingPanel.VirtualizationMode="Recycling" ScrollViewer.CanContentScroll="True"
                               ContextMenu="{StaticResource NodeMenu}" PreviewMouseRightButtonDown="OnTreeRightButtonDown">
+                        <TreeView.InputBindings>
+                            <MouseBinding Gesture="LeftDoubleClick" Command="{Binding OpenStubCommand}" />
+                        </TreeView.InputBindings>
                         <TreeView.Resources>
                             <SolidColorBrush x:Key="{x:Static SystemColors.HighlightBrushKey}" Color="#DCE8F6" />
                             <SolidColorBrush x:Key="{x:Static SystemColors.HighlightTextBrushKey}" Color="#1F2328" />
@@ -303,6 +308,7 @@
                         </TreeView.Resources>
                         <TreeView.ItemContainerStyle>
                             <Style TargetType="TreeViewItem">
+                                <EventSetter Event="RequestBringIntoView" Handler="OnTreeItemRequestBringIntoView" />
                                 <Setter Property="IsExpanded" Value="{Binding IsExpanded, Mode=TwoWay}" />
                                 <Setter Property="IsSelected" Value="{Binding IsSelected, Mode=TwoWay}" />
                                 <Setter Property="Visibility" Value="{Binding IsVisible, Converter={StaticResource BoolVis}}" />
@@ -314,15 +320,20 @@
 
                 <GridSplitter Grid.Column="1" Width="1" Background="{StaticResource BorderBrush}" HorizontalAlignment="Stretch" ResizeBehavior="PreviousAndNext" />
 
-                <!-- ============ Панель узла ============ -->
-                <Grid Grid.Column="2" Margin="22,16,20,10" DataContext="{Binding Panel}">
+                <!-- ============ Правая часть: карточка узла сверху, просмотр снизу; граница перетаскивается ============ -->
+                <Grid Grid.Column="2" x:Name="PanelBody" Margin="22,16,20,10" DataContext="{Binding Panel}">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="*" MinHeight="200" />
+                        <RowDefinition x:Name="SplitterRow" Height="Auto" />
+                        <RowDefinition x:Name="PreviewRow" Height="*" MinHeight="0" />
+                    </Grid.RowDefinitions>
                     <TextBlock Text="Выберите документ в дереве." Style="{StaticResource Muted}" HorizontalAlignment="Center" VerticalAlignment="Center"
                                Visibility="{Binding HasNode, Converter={StaticResource BoolVis}, ConverterParameter=invert}" />
-                    <DockPanel Visibility="{Binding HasNode, Converter={StaticResource BoolVis}}">
+                    <DockPanel Grid.Row="0" Visibility="{Binding HasNode, Converter={StaticResource BoolVis}}">
                         <!-- Шапка узла -->
                         <DockPanel DockPanel.Dock="Top">
-                            <TextBlock DockPanel.Dock="Left" Style="{StaticResource Icon}" Text="{Binding Node.Glyph}" FontSize="30"
-                                       Foreground="{StaticResource AccentBrush}" VerticalAlignment="Top" Margin="0,4,14,0" />
+                            <inf:FileIcon DockPanel.Dock="Left" FileName="{Binding Node.IconFile}" Glyph="{Binding Node.Glyph}" IconSize="32"
+                                          Foreground="{StaticResource AccentBrush}" VerticalAlignment="Top" Margin="0,4,14,0" />
                             <StackPanel>
                                 <TextBlock Text="{Binding Node.Title}" Style="{StaticResource Title}" />
                                 <TextBlock Text="{Binding Node.Name}" FontSize="15" Foreground="{StaticResource MutedBrush}" TextWrapping="Wrap"
@@ -331,7 +342,8 @@
                                     <TextBlock Text="{Binding Node.KindText}" Foreground="{StaticResource MutedBrush}" />
                                     <TextBlock Text="{Binding Node.VersionText}" Margin="14,0,0,0" Visibility="{Binding Node.VersionText, Converter={StaticResource NullVis}}" />
                                     <StackPanel Orientation="Horizontal" Margin="14,0,0,0" Visibility="{Binding Node.FullStateText, Converter={StaticResource NullVis}}">
-                                        <Ellipse Width="9" Height="9" Fill="{Binding Node.Mark, Converter={StaticResource MarkBrush}}" Margin="0,0,6,0" VerticalAlignment="Center" />
+                                        <Ellipse Width="9" Height="9" Fill="{Binding Node.StatusDot, Converter={StaticResource DotBrush}}" Margin="0,0,6,0" VerticalAlignment="Center"
+                                                 ToolTip="{Binding Node.StatusDotText}" />
                                         <TextBlock Text="{Binding Node.FullStateText}" TextWrapping="Wrap" />
                                     </StackPanel>
                                 </WrapPanel>
@@ -362,6 +374,8 @@
                                     <ContextMenu ItemsSource="{Binding MoreActions}" ItemContainerStyle="{StaticResource ActionMenuItem}" />
                                 </inf:DropDown.Menu>
                             </Button>
+                            <ToggleButton Content="Просмотр" IsChecked="{Binding ShowPreview}" Margin="12,0,0,0" Padding="10,4"
+                                          ToolTip="Показать модель или чертёж в eDrawings (вращение, масштаб)" />
                         </StackPanel>
 
                         <!-- Вкладки (набор зависит от типа узла) -->
@@ -379,6 +393,15 @@
                             </TabControl.ContentTemplate>
                         </TabControl>
                     </DockPanel>
+
+                    <GridSplitter x:Name="PreviewSplitter" Grid.Row="1" Height="8" HorizontalAlignment="Stretch" Background="Transparent"
+                                  ResizeDirection="Rows" Cursor="SizeNS" ToolTip="Перетащите, чтобы изменить высоту просмотра"
+                                  Visibility="{Binding ShowPreview, Converter={StaticResource BoolVis}}" />
+
+                    <!-- Просмотр (eDrawings) -->
+                    <inf:ModelPreview x:Name="Preview" Grid.Row="2" FilePath="{Binding Node.OpenablePath}" EmptyText="{Binding Node.PreviewEmptyText}"
+                                      Suspended="{Binding DataContext.Busy.IsBusy, ElementName=Root}"
+                                      Visibility="{Binding ShowPreview, Converter={StaticResource BoolVis}}" />
                 </Grid>
             </Grid>
         </Grid>

@@ -61,6 +61,28 @@ internal static class DocumentEndpoints
         });
 
         app.MapPost(ApiRoutes.Templates.DocumentUnused, MarkUnusedAsync);
+
+        app.MapPost(ApiRoutes.Templates.VersionsByHash, async (VersionsByHashRequest request, NpgsqlDataSource db, CancellationToken ct) =>
+        {
+            var hashes = (request.Hashes ?? []).Distinct(StringComparer.Ordinal).ToList();
+            if (hashes.Count > 100_000) return ApiErrors.Validation("Слишком много хешей в одном запросе.");
+            if (hashes.FirstOrDefault(h => !Core.Hashing.Sha256Hex.IsValid(h)) is { } bad)
+                return ApiErrors.Validation($"Неверный хеш содержимого «{bad}»: нужно 64 шестнадцатеричных символа в нижнем регистре.");
+            var response = new VersionsByHashResponse();
+            if (hashes.Count == 0) return Results.Ok(response);
+            await using var connection = await db.OpenConnectionAsync(ct);
+            var rows = await connection.QueryAsync<(string Sha256, Guid DocumentId, int Number)>(
+                "SELECT sha256, document_id, number FROM versions WHERE sha256 = ANY(@hashes) ORDER BY sha256, document_id, number",
+                new { hashes = hashes.ToArray() });
+            var summaries = new Dictionary<Guid, DocumentSummaryDto?>();
+            foreach (var r in rows)
+            {
+                if (!summaries.TryGetValue(r.DocumentId, out var summary))
+                    summaries[r.DocumentId] = summary = await DocumentQueries.GetSummaryAsync(connection, r.DocumentId);
+                if (summary != null) response.Items.Add(new VersionByHashDto { Sha256 = r.Sha256, Version = r.Number, Document = summary });
+            }
+            return Results.Ok(response);
+        });
     }
 
     private static IResult VersionNotFound(Guid id, int version) =>

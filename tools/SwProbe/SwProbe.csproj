@@ -6,5 +6,6 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\SolidBrew.Core\SolidBrew.Core.csproj" />
     <ProjectReference Include="..\..\src\SolidBrew.Adapters.SolidWorks\SolidBrew.Adapters.SolidWorks.csproj" />
+    <ProjectReference Include="..\..\src\SolidBrew.Workspace\SolidBrew.Workspace.csproj" />
   </ItemGroup>
 </Project>

@@ -25,8 +25,11 @@ public sealed class SolidWorksOptions
 
     /// <summary>
     /// Параметр <c>Searchflag</c> метода <c>GetDocumentDependencies2</c>: искать ссылки по правилам поиска SOLIDWORKS.
+    /// По умолчанию выключен: тогда возвращаются пути, записанные в файле. С поиском ответ зависит от того, что уже
+    /// загружено в SOLIDWORKS (проверено 25.11.2026 на 2026: устаревший путь чертежа то находился через модель,
+    /// оставшуюся в памяти от предыдущего чтения, то нет). Ссылки разрешает клиент — по папке документа и по имени.
     /// </summary>
-    public bool SearchDependencies { get; set; } = true;
+    public bool SearchDependencies { get; set; }
 
     /// <summary>
     /// Если документ нельзя открыть из-за одноимённого документа из другой папки — не бросать ошибку,
@@ -167,6 +170,13 @@ public sealed class SolidWorksAdapter : ICadAdapter, IDisposable
 
     public async Task<CadDocumentInfo> ReadAsync(string path, CancellationToken ct = default) =>
         (await ReadDetailedAsync(path, ct).ConfigureAwait(false)).Info;
+
+    /// <summary>Только ссылки (<c>GetDocumentDependencies2</c>): документ не открывается, ~13 мс на файл.</summary>
+    public Task<List<CadReference>> ReadReferencesAsync(string path, CancellationToken ct = default)
+    {
+        var full = CheckFile(path);
+        return RunAsync(s => ReadReferences(s, full, traverse: false, null, null), ct);
+    }
 
     /// <summary>Чтение с подробностями: сырые ответы API и время этапов.</summary>
     public Task<SwReadResult> ReadDetailedAsync(string path, CancellationToken ct = default)

@@ -34,8 +34,18 @@ public sealed class TestCadAdapter : ICadAdapter
     public async Task<CadDocumentInfo> ReadAsync(string path, CancellationToken ct = default)
     {
         var text = await ReadTextAsync(path, ct).ConfigureAwait(false);
+        FullReadCount++;
         return TestCadFormat.Parse(path, text);
     }
+
+    public async Task<List<CadReference>> ReadReferencesAsync(string path, CancellationToken ct = default)
+    {
+        var text = await ReadTextAsync(path, ct).ConfigureAwait(false);
+        return TestCadFormat.Parse(path, text).References;
+    }
+
+    /// <summary>Сколько раз вызывалось полное чтение <see cref="ReadAsync"/> (в SOLIDWORKS — с открытием документа). Для тестов.</summary>
+    public int FullReadCount { get; private set; }
 
     public async Task ReplaceReferencesAsync(string documentPath, IReadOnlyDictionary<string, string> oldToNew, CancellationToken ct = default)
     {

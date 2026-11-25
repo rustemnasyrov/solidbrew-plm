@@ -49,6 +49,12 @@ namespace SolidBrew.Core.Api
         Task<List<DocumentSummaryDto>> SearchDocumentsAsync(string? q = null, Guid? projectId = null, string? author = null,
             bool includeUnused = false, int? limit = null, bool roots = false, CancellationToken ct = default);
 
+        /// <summary>
+        /// POST /api/versions/by-hash — опубликованные версии с таким содержимым (во всех проектах).
+        /// Нужно постановке на учёт: файл, уже учтённый в PDM, не заводится заново, а берётся из хранилища.
+        /// </summary>
+        Task<List<VersionByHashDto>> FindVersionsByHashAsync(IEnumerable<string> hashes, CancellationToken ct = default);
+
         /// <summary>GET /api/documents/{id}.</summary>
         Task<DocumentDetailDto> GetDocumentAsync(Guid id, CancellationToken ct = default);
 

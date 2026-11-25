@@ -22,19 +22,20 @@ internal static class Commands
         try
         {
             adapter.Options.AssemblyReadMode = a.AsmMode;
-            adapter.Options.SearchDependencies = !a.NoSearch;
+            adapter.Options.SearchDependencies = a.Search;
             adapter.Options.StartIfNotRunning = a.Start;
             adapter.Options.SkipPropertiesIfBlocked = a.Command == "scan";
             object output = a.Command switch
             {
                 "info" => await InfoAsync(adapter, ct),
                 "read" => await adapter.ReadDetailedAsync(Arg(a, 0, "файл"), ct),
-                "deps" => await DepsAsync(adapter, Arg(a, 0, "файл"), a.Traverse, !a.NoSearch, ct),
+                "deps" => await DepsAsync(adapter, Arg(a, 0, "файл"), a.Traverse, a.Search, ct),
                 "scan" => await ScanAsync(adapter, Arg(a, 0, "папка"), a.Recursive, ct),
                 "make-testkit" => await adapter.RunAsync(s => TestKit.Make(s, WriteGuard.Check(Arg(a, 0, "папка"), a)), ct),
                 "open-verify" => await adapter.OpenAndVerifyDetailedAsync(Arg(a, 0, "головной файл"), Arg(a, 1, "workRoot"), ct),
                 "close" => await CloseAsync(adapter, Arg(a, 0, "файл"), ct),
                 "replace-ref" => await ReplaceRefAsync(adapter, a, ct),
+                "import-bench" => await ImportBench.RunAsync(adapter, Arg(a, 0, "головной файл"), a.Positional.Skip(1).ToList(), ct),
                 "" => throw new ArgumentException("Не указана команда."),
                 _ => throw new ArgumentException($"Неизвестная команда «{a.Command}»."),
             };

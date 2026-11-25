@@ -47,7 +47,10 @@ public sealed class SourceKit
     public static SourceKit Create(string root, bool withProblems = false)
     {
         var kit = new SourceKit(root);
-        void W(string rel, TestCadDocument doc) => TestCadWriter.Write(kit.Full(rel), doc);
+        // Сервер тестов общий и копит данные между тестами и запусками; одинаковое содержимое постановка взяла бы
+        // «из хранилища» (документы другого теста). Метка делает байты комплекта уникальными.
+        var tag = Guid.NewGuid().ToString("N");
+        void W(string rel, TestCadDocument doc) => TestCadWriter.Write(kit.Full(rel), doc.Geom("kit " + tag));
 
         W(Body, new TestCadDocument().Prop("Обозначение", "АБВ.001").Prop("Наименование", "Корпус").Prop("Материал", "Сталь 20").Geom("box 10 20 30"));
         W(Shaft, new TestCadDocument().Prop("Обозначение", "АБВ.002").Prop("Наименование", "Вал").Geom("cyl 5 100"));

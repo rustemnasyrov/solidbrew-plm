@@ -5,6 +5,7 @@
     <inf:MarkToBrushConverter x:Key="MarkBrush" />
     <inf:BoolToVisibilityConverter x:Key="BoolVis" />
     <inf:NullToVisibilityConverter x:Key="NullVis" />
+    <inf:StatusDotToBrushConverter x:Key="DotBrush" />
     <inf:CountToVisibilityConverter x:Key="CountVis" />
     <inf:InverseBoolConverter x:Key="Not" />
 

@@ -1,6 +1,7 @@
 <ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
                     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
                     xmlns:vm="clr-namespace:SolidBrew.Client.ViewModels"
+                    xmlns:inf="clr-namespace:SolidBrew.Client.Infrastructure"
                     xmlns:v="clr-namespace:SolidBrew.Client.Views">
 
     <!-- Вкладки панели узла: шаблон по типу ViewModel. Новая вкладка — новый DataTemplate здесь и строка в NodeTabRegistry. -->
@@ -38,7 +39,7 @@
                         <DataGridTemplateColumn.CellTemplate>
                             <DataTemplate>
                                 <StackPanel Orientation="Horizontal" ToolTip="{Binding FileName}">
-                                    <TextBlock Style="{StaticResource Icon}" Text="{Binding Glyph}" Foreground="{StaticResource MutedBrush}" Margin="0,0,6,0" />
+                                    <inf:FileIcon FileName="{Binding IconFile}" Glyph="{Binding Glyph}" IconSize="16" Foreground="{StaticResource MutedBrush}" Margin="0,0,6,0" />
                                     <TextBlock Text="{Binding Title}" />
                                 </StackPanel>
                             </DataTemplate>
@@ -68,7 +69,7 @@
                         <DataGridTemplateColumn.CellTemplate>
                             <DataTemplate>
                                 <StackPanel Orientation="Horizontal">
-                                    <TextBlock Style="{StaticResource Icon}" Text="{Binding Glyph}" Foreground="{StaticResource MutedBrush}" Margin="0,0,6,0" />
+                                    <inf:FileIcon FileName="{Binding IconFile}" Glyph="{Binding Glyph}" IconSize="16" Foreground="{StaticResource MutedBrush}" Margin="0,0,6,0" />
                                     <TextBlock Text="{Binding Title}" />
                                 </StackPanel>
                             </DataTemplate>
