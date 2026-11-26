@@ -116,6 +116,99 @@ public sealed class TestCadAdapter : ICadAdapter
         }
     }
 
+    /// <summary>
+    /// Записать свойства: строки <c>prop:</c> с тем же ключом (и конфигурацией) заменяются, новые дописываются после
+    /// последней строки свойств. Как в SOLIDWORKS: открытый в CAD и только для чтения файл не меняется.
+    /// </summary>
+    public async Task WritePropertiesAsync(string documentPath, IReadOnlyList<CadPropertyChange> changes, CancellationToken ct = default)
+    {
+        if (changes == null) throw new ArgumentNullException(nameof(changes));
+        var full = Path.GetFullPath(documentPath);
+        if (OpenDocuments.Contains(full))
+            throw new CadException($"Документ «{Path.GetFileName(full)}» открыт в TestCad. Закройте его и повторите.");
+        if ((File.GetAttributes(full) & FileAttributes.ReadOnly) != 0)
+            throw new CadException($"Файл «{Path.GetFileName(full)}» только для чтения: возьмите документ в работу, чтобы изменить свойства.");
+        if (FailWrite != null) throw new CadException(FailWrite);
+
+        var text = await ReadTextAsync(full, ct).ConfigureAwait(false);
+        var lines = text.Replace("\r\n", "\n").Split('\n').ToList();
+        if (lines.Count > 0 && lines[^1].Length == 0) lines.RemoveAt(lines.Count - 1);
+        static string Key(string scope, string name) => (scope.Length > 0 ? scope + "|" : string.Empty) + name;
+        var pending = changes.ToDictionary(c => Key(c.Configuration, c.Name), c => c, StringComparer.OrdinalIgnoreCase);
+        var lastProp = -1;
+        for (var i = 0; i < lines.Count; i++)
+        {
+            var trimmed = lines[i].Trim();
+            if (TestCadFormat.TryValue(trimmed, TestCadFormat.CadVerPrefix, out _) || TestCadFormat.TryValue(trimmed, TestCadFormat.ConfigPrefix, out _))
+            {
+                lastProp = Math.Max(lastProp, i);
+                continue;
+            }
+            if (!TestCadFormat.TryValue(trimmed, TestCadFormat.PropPrefix, out var prop)) continue;
+            lastProp = i;
+            var eq = prop.IndexOf('=');
+            if (eq <= 0) continue;
+            var key = prop.Substring(0, eq).Trim();
+            var bar = key.IndexOf('|');
+            var normalized = bar >= 0 ? Key(key.Substring(0, bar).Trim(), key.Substring(bar + 1).Trim()) : key;
+            if (pending.Remove(normalized, out var change))
+                lines[i] = "prop: " + Key(change.Configuration, change.Name) + "=" + change.Value;
+        }
+        lines.InsertRange(lastProp + 1, pending.Values.Select(c => "prop: " + Key(c.Configuration, c.Name) + "=" + c.Value));
+
+        var temp = Path.Combine(Path.GetDirectoryName(full)!, "." + Path.GetFileName(full) + "." + Guid.NewGuid().ToString("N") + ".tmp");
+        try
+        {
+            await File.WriteAllTextAsync(temp, string.Join("\r\n", lines) + "\r\n", TestCadFormat.Utf8NoBom, ct).ConfigureAwait(false);
+            File.Move(temp, full, overwrite: true);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            TryDelete(temp);
+            throw new CadException($"Не удалось записать «{Path.GetFileName(full)}»: {ex.Message}", ex);
+        }
+        WriteCount++;
+    }
+
+    /// <summary>
+    /// Убрать ссылки, как SOLIDWORKS: у сборки строки <c>ref:</c> удаляются (компоненты); у детали строки остаются
+    /// («разорваны»), а имена файлов дописываются в свойство <see cref="DocumentProperties.RemovedReferencesKey"/>; чертёж — отказ.
+    /// </summary>
+    public async Task RemoveReferencesAsync(string documentPath, IReadOnlyList<string> savedPaths, CancellationToken ct = default)
+    {
+        if (savedPaths == null) throw new ArgumentNullException(nameof(savedPaths));
+        var full = Path.GetFullPath(documentPath);
+        var kind = KindOf(full);
+        if (kind == DocumentKind.Drawing)
+            throw new CadException($"У чертежа «{Path.GetFileName(full)}» ссылки — это виды. Удалите виды в CAD.");
+        if (OpenDocuments.Contains(full))
+            throw new CadException($"Документ «{Path.GetFileName(full)}» открыт в TestCad. Закройте его и повторите.");
+        if ((File.GetAttributes(full) & FileAttributes.ReadOnly) != 0)
+            throw new CadException($"Файл «{Path.GetFileName(full)}» только для чтения: возьмите документ в работу.");
+        if (FailWrite != null) throw new CadException(FailWrite);
+
+        if (kind == DocumentKind.Part)
+        {
+            var info = await ReadAsync(full, ct).ConfigureAwait(false);
+            var names = savedPaths.Select(CadReference.FileNameOf);
+            await WritePropertiesAsync(full, new[] { new CadPropertyChange(string.Empty, DocumentProperties.RemovedReferencesKey, DocumentProperties.WithRemovedReferences(info.Properties, names)) }, ct).ConfigureAwait(false);
+            return;
+        }
+
+        var text = await ReadTextAsync(full, ct).ConfigureAwait(false);
+        var lines = text.Replace("\r\n", "\n").Split('\n').ToList();
+        if (lines.Count > 0 && lines[^1].Length == 0) lines.RemoveAt(lines.Count - 1);
+        lines.RemoveAll(l => TestCadFormat.TryValue(l.Trim(), TestCadFormat.RefPrefix, out var saved)
+                             && savedPaths.Any(p => string.Equals(p.Replace('/', '\\'), saved.Replace('/', '\\'), StringComparison.OrdinalIgnoreCase)));
+        await File.WriteAllTextAsync(full, string.Join("\r\n", lines) + "\r\n", TestCadFormat.Utf8NoBom, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>Сколько раз записывались свойства. Для тестов.</summary>
+    public int WriteCount { get; private set; }
+
+    /// <summary>Имитация отказа CAD при записи свойств (текст ошибки). Для тестов.</summary>
+    public string? FailWrite { get; set; }
+
     public async Task<OpenReport> OpenAndVerifyAsync(string headPath, string workRoot, CancellationToken ct = default)
     {
         var report = new OpenReport { HeadPath = Path.GetFullPath(headPath) };

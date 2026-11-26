@@ -107,6 +107,10 @@ public sealed partial class ProductNodeViewModel : ObservableObject
     [ObservableProperty]
     private bool _isSelected;
 
+    /// <summary>Входит в множественное выделение (Ctrl/Shift + щелчок).</summary>
+    [ObservableProperty]
+    private bool _isMultiSelected;
+
     /// <summary>Виден при текущем фильтре.</summary>
     [ObservableProperty]
     private bool _isVisible = true;
@@ -148,9 +152,13 @@ public sealed partial class ProductNodeViewModel : ObservableObject
         get
         {
             if (IsProductStub) return StatusDot.InStorage;
+            if (Type == NodeType.Unresolved) return HasProblem ? StatusDot.Problem : StatusDot.NotInPdm;
+            if (Type == NodeType.Draft) return StatusDot.NotInPdm;
             if (!IsDocument) return StatusDot.None;
+            if (HasProblem) return StatusDot.Problem;
             if (IsModified) return StatusDot.MineModified;
             if (NeedsResave) return StatusDot.NeedsResave;
+            if (IsOutdated) return StatusDot.Outdated;
             if (IsMine) return StatusDot.Mine;
             if (IsLockedByOther) return StatusDot.Other;
             if (!HasLocalFile) return StatusDot.Missing;
@@ -168,6 +176,9 @@ public sealed partial class ProductNodeViewModel : ObservableObject
             : "Изменилась входящая модель — возьмите сборку в работу и пересохраните",
         StatusDot.Other => "Взят другим: " + Who(LockInfo),
         StatusDot.Missing => "Файла нет в рабочей папке",
+        StatusDot.Outdated => $"Устарел: в хранилище есть v{LatestVersion} — обновите",
+        StatusDot.Problem => "Проблема: " + ProblemText,
+        StatusDot.NotInPdm => Type == NodeType.Draft ? "Не учтён в PDM: новый файл — сдайте, чтобы поставить на учёт" : "Не учтён в PDM: файл по ссылке — «Сдать в хранилище» по правой кнопке",
         _ => string.Empty,
     };
 
@@ -220,26 +231,31 @@ public sealed partial class ProductNodeViewModel : ObservableObject
 
     public string? FullPath => File?.FullPath;
 
-    private bool? _linkExists;
+    private bool _linkResolved;
+    private string? _linkPath;
 
     /// <summary>
-    /// Для узла «не учтён в PDM»: путь из ссылки, если файл по нему есть (CAD откроет его по ссылке); иначе null.
-    /// Наличие файла проверяется один раз на узел (сетевой диск).
+    /// Для узла «не учтён в PDM»: файл по ссылке — по пути из неё, а если путь устарел, файл с тем же именем рядом
+    /// с документом-родителем или под сохранившейся частью пути (см. <see cref="LinkLocator"/>); иначе null.
+    /// Ищется один раз на узел (сетевой диск).
     /// </summary>
     public string? LinkPath
     {
         get
         {
             if (Type != NodeType.Unresolved) return null;
-            var path = Kit!.RefPath.Replace('/', '\\');
-            if (_linkExists == null)
+            if (!_linkResolved)
             {
-                try { _linkExists = System.IO.Path.IsPathFullyQualified(path) && System.IO.File.Exists(path); }
-                catch (Exception ex) when (ex is ArgumentException or NotSupportedException or System.IO.PathTooLongException) { _linkExists = false; }
+                var owner = ParentDocument?.FullPath is { } p ? System.IO.Path.GetDirectoryName(p) : null;
+                _linkPath = LinkLocator.Find(Kit!.RefPath, owner);
+                _linkResolved = true;
             }
-            return _linkExists == true ? path : null;
+            return _linkPath;
         }
     }
+
+    /// <summary>Файл найден не по пути из ссылки (путь устарел), а по имени.</summary>
+    public bool IsLinkRelocated => LinkPath is { } l && !string.Equals(l, Kit!.RefPath.Replace('/', '\\'), StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
     /// Значок неоткрытого изделия: по имени файла, иначе по расширению в обозначении/наименовании (часто «….SLDASM»),
@@ -260,7 +276,7 @@ public sealed partial class ProductNodeViewModel : ObservableObject
     }
 
     /// <summary>Почему нечего показать в просмотре.</summary>
-    public string PreviewEmptyText => IsProductStub ? "Изделие не открыто. Раскройте его в дереве — оно откроется в рабочую папку, и модель появится здесь." : Type switch
+    public string PreviewEmptyText => IsProductStub ? "Изделие ещё не открывалось на этом компьютере. Раскройте его в дереве — оно откроется в рабочую папку, и модель появится здесь." : Type switch
     {
         NodeType.Group => "Выберите документ.",
         NodeType.Unresolved => "Файла по ссылке нет: " + Kit!.RefPath,
@@ -269,6 +285,40 @@ public sealed partial class ProductNodeViewModel : ObservableObject
 
     /// <summary>Файл, который открывается из узла: в рабочей папке или, для не учтённого в PDM, по ссылке.</summary>
     public string? OpenablePath => FullPath ?? LinkPath;
+
+    /// <summary>
+    /// Файл для просмотра: как <see cref="OpenablePath"/>, а у неоткрытого изделия — его головная сборка в рабочей папке,
+    /// куда изделие открывалось раньше (просмотр сразу по щелчку, без открытия изделия).
+    /// </summary>
+    public string? PreviewPath
+    {
+        get
+        {
+            if (OpenablePath is { } path) return path;
+            if (!IsProductStub) return null;
+            _stubPreview ??= StubLocalFile() ?? string.Empty;
+            return _stubPreview.Length > 0 ? _stubPreview : null;
+        }
+    }
+
+    private string? _stubPreview;
+
+    private string? StubLocalFile()
+    {
+        if (Product?.WorkRoot is not { Length: > 0 } root) return null;
+        try
+        {
+            if (!WorkspaceService.IsWorkspace(root)) return null;
+            var entry = WorkspaceState.Load(root).FindByDocument(Product.DocumentId);
+            if (entry == null) return null;
+            var full = SolidBrew.Core.Paths.RelPath.Combine(root, entry.RelPath);
+            return System.IO.File.Exists(full) ? full : null;
+        }
+        catch (Exception ex) when (ex is System.IO.IOException or UnauthorizedAccessException or WorkspaceException or System.Text.Json.JsonException)
+        {
+            return null;
+        }
+    }
 
     /// <summary>Родитель-документ (для узла «не учтён в PDM» — чья это ссылка).</summary>
     public ProductNodeViewModel? ParentDocument
@@ -422,7 +472,7 @@ public sealed partial class ProductNodeViewModel : ObservableObject
             if (Type == NodeType.Draft) return "черновик — ещё не поставлен на учёт; сдайте, чтобы он появился в хранилище";
             if (Type == NodeType.Unresolved)
                 return LinkPath != null
-                    ? "не учтён в PDM — CAD открывает его по ссылке; «Поставить на учёт», чтобы брать в работу и сдавать"
+                    ? (IsLinkRelocated ? $"не учтён в PDM; путь в ссылке устарел, файл найден по имени: {LinkPath}" : "не учтён в PDM — CAD открывает его по ссылке") + "; «Сдать в хранилище», чтобы брать в работу и сдавать"
                     : "ссылка на файл, не учтённый в PDM; по этому пути файла нет";
             var parts = new List<string>
             {
@@ -538,6 +588,115 @@ public sealed partial class ProductTreeViewModel : ObservableObject
     [ObservableProperty]
     private ProductNodeViewModel? _selectedNode;
 
+    private readonly List<ProductNodeViewModel> _multi = new();
+    private bool _extending;
+
+    /// <summary>
+    /// Выделенные узлы: при множественном выделении (Ctrl/Shift + щелчок) — все отмеченные в порядке дерева,
+    /// иначе — один текущий узел.
+    /// </summary>
+    public IReadOnlyList<ProductNodeViewModel> SelectedNodes =>
+        _multi.Count > 1 ? VisibleOrder().Where(n => n.IsMultiSelected).ToList()
+        : SelectedNode != null ? new[] { SelectedNode } : Array.Empty<ProductNodeViewModel>();
+
+    public bool HasMultiSelection => _multi.Count > 1;
+
+    partial void OnSelectedNodeChanged(ProductNodeViewModel? value)
+    {
+        if (_extending) return;
+        ResetMulti(value);
+    }
+
+    private void ResetMulti(ProductNodeViewModel? only)
+    {
+        foreach (var n in _multi) n.IsMultiSelected = false;
+        _multi.Clear();
+        if (only != null)
+        {
+            _multi.Add(only);
+            only.IsMultiSelected = true;
+        }
+        OnPropertyChanged(nameof(SelectedNodes));
+        OnPropertyChanged(nameof(HasMultiSelection));
+    }
+
+    /// <summary>Видимые узлы сверху вниз (раскрытые ветви) — для выделения диапазона через Shift.</summary>
+    public IEnumerable<ProductNodeViewModel> VisibleOrder()
+    {
+        IEnumerable<ProductNodeViewModel> Walk(ProductNodeViewModel n)
+        {
+            if (!n.IsVisible) yield break;
+            yield return n;
+            if (!n.IsExpanded) yield break;
+            foreach (var c in n.Children)
+            foreach (var d in Walk(c)) yield return d;
+        }
+        return Roots.SelectMany(Walk);
+    }
+
+    /// <summary>
+    /// Щелчок с Ctrl — добавить узел в выделение или убрать из него; с Shift — выделить диапазон от прежнего текущего узла.
+    /// Текущим (карточка справа) становится щёлкнутый узел.
+    /// </summary>
+    public void ExtendSelection(ProductNodeViewModel node, bool toggle, bool range)
+    {
+        var anchor = SelectedNode;
+        _extending = true;
+        try
+        {
+            if (_multi.Count == 0 && anchor != null)
+            {
+                _multi.Add(anchor);
+                anchor.IsMultiSelected = true;
+            }
+            if (range && anchor != null)
+            {
+                var order = VisibleOrder().ToList();
+                int a = order.IndexOf(anchor), b = order.IndexOf(node);
+                if (a >= 0 && b >= 0)
+                {
+                    if (!toggle)
+                    {
+                        foreach (var n in _multi) n.IsMultiSelected = false;
+                        _multi.Clear();
+                    }
+                    for (var i = Math.Min(a, b); i <= Math.Max(a, b); i++)
+                    {
+                        if (order[i].IsMultiSelected) continue;
+                        order[i].IsMultiSelected = true;
+                        _multi.Add(order[i]);
+                    }
+                }
+            }
+            else if (node.IsMultiSelected && _multi.Count > 1)
+            {
+                node.IsMultiSelected = false;
+                _multi.Remove(node);
+            }
+            else if (!node.IsMultiSelected)
+            {
+                node.IsMultiSelected = true;
+                _multi.Add(node);
+            }
+
+            // Текущий узел: щёлкнутый, а если его сняли с выделения — последний оставшийся. Диапазон через Shift
+            // строится от прежнего текущего, поэтому при Shift он не меняется.
+            var current = range ? anchor! : node.IsMultiSelected ? node : _multi[^1];
+            if (!ReferenceEquals(SelectedNode, current))
+            {
+                if (SelectedNode != null) SelectedNode.IsSelected = false;
+                current.IsSelected = true;
+                SelectedNode = current;
+            }
+        }
+        finally
+        {
+            _extending = false;
+        }
+        OnPropertyChanged(nameof(SelectedNodes));
+        OnPropertyChanged(nameof(HasMultiSelection));
+    }
+
     /// <summary>Подстрока обозначения, наименования или имени файла.</summary>
     [ObservableProperty]
     private string _filterText = string.Empty;
@@ -549,10 +708,19 @@ public sealed partial class ProductTreeViewModel : ObservableObject
     private bool _showModified;
 
     [ObservableProperty]
+    private bool _showNeedsResave;
+
+    [ObservableProperty]
     private bool _showOutdated;
 
     [ObservableProperty]
     private bool _showProblems;
+
+    [ObservableProperty]
+    private bool _showNotInPdm;
+
+    [ObservableProperty]
+    private bool _showOther;
 
     [ObservableProperty]
     private int _mineCount;
@@ -561,10 +729,19 @@ public sealed partial class ProductTreeViewModel : ObservableObject
     private int _modifiedCount;
 
     [ObservableProperty]
+    private int _needsResaveCount;
+
+    [ObservableProperty]
     private int _outdatedCount;
 
     [ObservableProperty]
     private int _problemCount;
+
+    [ObservableProperty]
+    private int _notInPdmCount;
+
+    [ObservableProperty]
+    private int _otherCount;
 
     [ObservableProperty]
     private bool _hasNoMatches;
@@ -619,13 +796,16 @@ public sealed partial class ProductTreeViewModel : ObservableObject
         OnPropertyChanged(nameof(DraftsGroup));
     }
 
-    public bool IsFiltered => FilterText.Trim().Length > 0 || ShowMine || ShowModified || ShowOutdated || ShowProblems;
+    public bool IsFiltered => FilterText.Trim().Length > 0 || ShowMine || ShowModified || ShowNeedsResave || ShowOutdated || ShowProblems || ShowNotInPdm || ShowOther;
 
     partial void OnFilterTextChanged(string value) => ApplyFilter();
     partial void OnShowMineChanged(bool value) => ApplyFilter();
     partial void OnShowModifiedChanged(bool value) => ApplyFilter();
+    partial void OnShowNeedsResaveChanged(bool value) => ApplyFilter();
     partial void OnShowOutdatedChanged(bool value) => ApplyFilter();
     partial void OnShowProblemsChanged(bool value) => ApplyFilter();
+    partial void OnShowNotInPdmChanged(bool value) => ApplyFilter();
+    partial void OnShowOtherChanged(bool value) => ApplyFilter();
 
     public IEnumerable<ProductNodeViewModel> AllNodes() => Roots.SelectMany(r => r.SelfAndDescendants());
 
@@ -639,13 +819,14 @@ public sealed partial class ProductTreeViewModel : ObservableObject
         _drafts = null;
         ComposeRoots();
         SelectedNode = null;
-        MineCount = ModifiedCount = OutdatedCount = ProblemCount = 0;
+        MineCount = ModifiedCount = NeedsResaveCount = OutdatedCount = ProblemCount = NotInPdmCount = OtherCount = 0;
         HasNoMatches = false;
     }
 
     /// <summary>Построить дерево. Раскрытие и выделение сохраняются по ключам узлов.</summary>
     public void Load(KitTreeNode tree, WorkspaceStatus? status)
     {
+        LinkLocator.Reset();
         var previousRoot = Root?.Key;
         var expanded = new HashSet<string>(AllNodes().Where(n => n.IsExpanded && !n.IsProductStub).Select(n => n.Key), StringComparer.Ordinal);
         var selected = SelectedNode?.Key;
@@ -678,7 +859,10 @@ public sealed partial class ProductTreeViewModel : ObservableObject
         var docs = AllNodes().Where(n => n.IsDocument && !n.IsProductStub).GroupBy(n => n.DocumentId).Select(g => g.First()).ToList();
         MineCount = docs.Count(n => n.IsMine);
         ModifiedCount = docs.Count(n => n.IsModified) + drafts.Count;
+        NeedsResaveCount = docs.Count(n => n.NeedsResave && !n.IsModified);
         OutdatedCount = docs.Count(n => n.IsOutdated);
+        OtherCount = docs.Count(n => n.IsLockedByOther);
+        NotInPdmCount = drafts.Count + AllNodes().Where(n => n.Type == NodeType.Unresolved).Select(n => n.Kit!.RefPath).Distinct(StringComparer.OrdinalIgnoreCase).Count();
         ProblemCount = docs.Count(n => n.HasProblem) + AllNodes().Count(n => n.Type == NodeType.Unresolved && n.HasProblem);
         ApplyFilter();
 
@@ -747,11 +931,14 @@ public sealed partial class ProductTreeViewModel : ObservableObject
     /// <summary>Подходит ли узел под быстрые отборы (между собой — «или»).</summary>
     private bool MatchesQuick(ProductNodeViewModel n)
     {
-        if (!ShowMine && !ShowModified && !ShowOutdated && !ShowProblems) return true;
+        if (!ShowMine && !ShowModified && !ShowNeedsResave && !ShowOutdated && !ShowProblems && !ShowNotInPdm && !ShowOther) return true;
         return (ShowMine && n.IsMine) ||
                (ShowModified && (n.IsModified || n.IsDraft)) ||
+               (ShowNeedsResave && n.NeedsResave && !n.IsModified) ||
                (ShowOutdated && n.IsOutdated) ||
-               (ShowProblems && n.HasProblem);
+               (ShowProblems && n.HasProblem) ||
+               (ShowNotInPdm && (n.IsDraft || n.Type == NodeType.Unresolved)) ||
+               (ShowOther && n.IsLockedByOther);
     }
 
     /// <summary>
@@ -794,7 +981,7 @@ public sealed partial class ProductTreeViewModel : ObservableObject
     private void ClearFilter()
     {
         FilterText = string.Empty;
-        ShowMine = ShowModified = ShowOutdated = ShowProblems = false;
+        ShowMine = ShowModified = ShowNeedsResave = ShowOutdated = ShowProblems = ShowNotInPdm = ShowOther = false;
     }
 
     [RelayCommand]

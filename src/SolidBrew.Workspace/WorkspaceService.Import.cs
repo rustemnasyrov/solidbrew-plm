@@ -49,11 +49,11 @@ public sealed partial class WorkspaceService
             var nameIndex = BuildNameIndex(searchFolders, ct);
             var counter = 0;
 
-            async Task<ImportDocument> ScanAsync(string path, bool isHead, bool isExtra)
+            async Task<ImportDocument> ScanAsync(string path, bool isHead, bool isExtra, string? savedLocation = null)
             {
                 counter++;
                 progress?.Report(new WorkProgress(WorkStage.Reading, counter, 0, $"Чтение «{Path.GetFileName(path)}»"));
-                var doc = await ScanSourceAsync(report, path, counter, isHead, isExtra, working, searchFolders, nameIndex, ct).ConfigureAwait(false);
+                var doc = await ScanSourceAsync(report, path, counter, isHead, isExtra, MovedFrom(savedLocation, path), working, searchFolders, nameIndex, ct).ConfigureAwait(false);
                 report.Documents.Add(doc);
                 return doc;
             }
@@ -72,13 +72,15 @@ public sealed partial class WorkspaceService
                         foreach (var t in targets)
                         {
                             if (report.Find(t) != null) continue;
-                            queue.Enqueue(await ScanAsync(t, false, false).ConfigureAwait(false));
+                            // Путь из ссылки — где файл лежал при сохранении: если его перенесли, по нему ищутся и его ссылки.
+                            queue.Enqueue(await ScanAsync(t, false, false, SavedFullPath(r.SavedPath, Path.GetDirectoryName(d.SourcePath)!)).ConfigureAwait(false));
                         }
                     }
                 }
             }
 
-            var headDoc = await ScanAsync(head, true, false).ConfigureAwait(false);
+            var headSaved = string.IsNullOrWhiteSpace(options.HeadSavedPath) ? null : SavedFullPath(options.HeadSavedPath, Path.GetDirectoryName(head)!);
+            var headDoc = await ScanAsync(head, true, false, headSaved).ConfigureAwait(false);
             await ClosureAsync(headDoc).ConfigureAwait(false);
 
             // Чертежи в папке головного файла (с подпапками) и в доп. папках: сборка не знает своих чертежей, поэтому их ищут
@@ -106,7 +108,7 @@ public sealed partial class WorkspaceService
                     continue; // нечитаемый чертёж не может быть привязан к комплекту
                 }
                 var dir = Path.GetDirectoryName(path)!;
-                candidates.Add((path, refs.Select(r => ClassifyImportReference(path, dir, r.SavedPath, searchFolders, nameIndex)).ToList()));
+                candidates.Add((path, refs.Select(r => ClassifyImportReference(path, dir, r.SavedPath, null, searchFolders, nameIndex)).ToList()));
             }
             bool changed;
             do
@@ -172,6 +174,36 @@ public sealed partial class WorkspaceService
             d.Existing = d.Sha256.Length > 0 && best.TryGetValue(d.Sha256, out var v) ? v : null;
     }
 
+    /// <summary>
+    /// Заново отметить документы, уже учтённые в PDM, и пересчитать отчёт. Нужно, если между подготовкой и постановкой
+    /// часть его файлов поставили на учёт другой постановкой (пакетная сдача файлов по ссылке с общими компонентами):
+    /// тогда они берутся из хранилища, а не загружаются второй раз.
+    /// </summary>
+    public async Task RefreshExistingAsync(ImportReport report, CancellationToken ct = default)
+    {
+        if (report == null) throw new ArgumentNullException(nameof(report));
+        await FindExistingAsync(report, ct).ConfigureAwait(false);
+        report.Recompute();
+    }
+
+    /// <summary>Полный путь ссылки (относительная — от папки ссылающегося документа); null — путь недопустим.</summary>
+    private static string? SavedFullPath(string saved, string referencingDir)
+    {
+        try
+        {
+            var normalized = saved.Replace('/', '\\');
+            return Path.GetFullPath(Path.IsPathFullyQualified(normalized) ? normalized : Path.Combine(referencingDir, normalized));
+        }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>Прежнее расположение документа, если он перенесён (путь из ссылки не совпадает с найденным файлом).</summary>
+    private static string? MovedFrom(string? savedLocation, string actual) =>
+        savedLocation != null && !string.Equals(savedLocation, Path.GetFullPath(actual), StringComparison.OrdinalIgnoreCase) ? savedLocation : null;
+
     private static bool IsTempName(string path)
     {
         var n = Path.GetFileName(path);
@@ -211,7 +243,7 @@ public sealed partial class WorkspaceService
     private static bool IsInside(string folder, string path) =>
         Path.GetFullPath(path).StartsWith(folder.TrimEnd('\\') + "\\", StringComparison.OrdinalIgnoreCase);
 
-    private async Task<ImportDocument> ScanSourceAsync(ImportReport report, string source, int n, bool isHead, bool isExtra,
+    private async Task<ImportDocument> ScanSourceAsync(ImportReport report, string source, int n, bool isHead, bool isExtra, string? savedLocation,
         Dictionary<string, int> working, List<string> searchFolders, Dictionary<string, List<string>> nameIndex, CancellationToken ct)
     {
         var copy = Path.Combine(report.StagingRoot, "files", n.ToString(System.Globalization.CultureInfo.InvariantCulture), Path.GetFileName(source));
@@ -272,17 +304,42 @@ public sealed partial class WorkspaceService
             Properties = info.Properties,
             IsHead = isHead,
             IsExtra = isExtra,
+            SavedLocation = savedLocation,
         };
 
         var dir = Path.GetDirectoryName(source)!;
         foreach (var r in info.References)
         {
-            doc.References.Add(ClassifyImportReference(source, dir, r.SavedPath, searchFolders, nameIndex));
+            doc.References.Add(ClassifyImportReference(source, dir, r.SavedPath, savedLocation, searchFolders, nameIndex));
         }
         return doc;
     }
 
-    private static ImportReference ClassifyImportReference(string source, string dir, string saved, List<string> searchFolders, Dictionary<string, List<string>> nameIndex)
+    /// <summary>
+    /// Ссылка документа, перенесённого из <paramref name="savedLocation"/> (переименовали или переместили папку): файл на том же
+    /// месте относительно документа, что и до переноса. null — документ не переносился, путь на другом диске или файла там нет.
+    /// </summary>
+    private static string? FindRelocated(string source, string dir, string saved, string? savedLocation)
+    {
+        if (savedLocation == null) return null;
+        var oldDir = Path.GetDirectoryName(savedLocation);
+        var savedFull = SavedFullPath(saved, oldDir ?? dir);
+        if (oldDir == null || savedFull == null || string.Equals(oldDir.TrimEnd('\\'), dir.TrimEnd('\\'), StringComparison.OrdinalIgnoreCase)) return null;
+        try
+        {
+            var rel = Path.GetRelativePath(oldDir, savedFull);
+            if (Path.IsPathRooted(rel)) return null; // другой диск — относительного положения нет
+            var candidate = Path.GetFullPath(Path.Combine(dir, rel));
+            return File.Exists(candidate) && !string.Equals(candidate, source, StringComparison.OrdinalIgnoreCase) ? candidate : null;
+        }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException or IOException)
+        {
+            return null;
+        }
+    }
+
+    private static ImportReference ClassifyImportReference(string source, string dir, string saved, string? savedLocation,
+        List<string> searchFolders, Dictionary<string, List<string>> nameIndex)
     {
         // Порядок поиска SOLIDWORKS (без документов в памяти): файл с тем же именем в папке ссылающегося документа,
         // затем записанный путь. Так CAD и откроет исходник; файл, перенесённый вместе с документом, — найден, а не «по имени».
@@ -316,6 +373,17 @@ public sealed partial class WorkspaceService
                 Category = inside ? ImportReferenceCategory.Found : ImportReferenceCategory.OutsideFolders,
                 TargetPath = resolved,
                 Accept = inside,
+            };
+        }
+
+        // Документ перенесли вместе с окружением (папку переименовали): файл на прежнем месте относительно документа.
+        // Точнее совпадения по имени, но CAD сам так не ищет — нужно подтверждение.
+        if (FindRelocated(source, dir, saved, savedLocation) is { } relocated)
+        {
+            return new ImportReference
+            {
+                SourceDocument = source, SavedPath = saved, Category = ImportReferenceCategory.Relocated, TargetPath = relocated,
+                MovedFrom = Path.GetDirectoryName(savedLocation!), MovedTo = dir,
             };
         }
 

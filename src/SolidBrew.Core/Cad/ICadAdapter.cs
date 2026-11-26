@@ -38,6 +38,20 @@ namespace SolidBrew.Core.Cad
         /// </summary>
         Task ReplaceReferencesAsync(string documentPath, IReadOnlyDictionary<string, string> oldToNew, CancellationToken ct = default);
 
+        /// <summary>
+        /// Записать свойства в файл и сохранить его (свойство создаётся, если его нет; значение — текст).
+        /// Файл должен быть доступен для записи. Ошибки — <see cref="CadException"/>; при ошибке файл не меняется.
+        /// </summary>
+        Task WritePropertiesAsync(string documentPath, IReadOnlyList<CadPropertyChange> changes, CancellationToken ct = default);
+
+        /// <summary>
+        /// Убрать из документа ссылки (пути — как в <see cref="CadReference.SavedPath"/>) и сохранить его. Сборка — удаляются
+        /// компоненты; деталь — внешние ссылки разрываются (все сразу, так умеет CAD), а имена файлов записываются в свойство
+        /// <see cref="DocumentProperties.RemovedReferencesKey"/>, по которому PDM их больше не учитывает. Чертёж — не поддерживается.
+        /// Файл должен быть доступен для записи. Ошибки — <see cref="CadException"/>.
+        /// </summary>
+        Task RemoveReferencesAsync(string documentPath, IReadOnlyList<string> savedPaths, CancellationToken ct = default);
+
         /// <summary>Открыть в CAD и проверить, откуда реально загружены компоненты в каждой конфигурации.</summary>
         Task<OpenReport> OpenAndVerifyAsync(string headPath, string workRoot, CancellationToken ct = default);
     }

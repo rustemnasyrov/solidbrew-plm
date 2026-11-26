@@ -33,7 +33,7 @@
 
             <!-- Узел дерева изделия: значок, обозначение, наименование, метка состояния (только если не «свободен»). -->
             <HierarchicalDataTemplate DataType="{x:Type vm:ProductNodeViewModel}" ItemsSource="{Binding Children}">
-                <StackPanel Orientation="Horizontal" Margin="0,3" ToolTip="{Binding ToolTip}" ToolTipService.InitialShowDelay="700">
+                <StackPanel x:Name="Row" Orientation="Horizontal" Margin="0,3" ToolTip="{Binding ToolTip}" ToolTipService.InitialShowDelay="700" Background="Transparent">
                     <inf:FileIcon x:Name="Glyph" FileName="{Binding IconFile}" Glyph="{Binding Glyph}" IconSize="16"
                                   Foreground="{StaticResource MutedBrush}" Margin="0,0,4,0" />
                     <!-- Кружок состояния: красный — изменён, жёлтый — пересохранить, синий — взят мной, зелёный — в хранилище -->
@@ -41,13 +41,17 @@
                              Fill="{Binding StatusDot, Converter={StaticResource DotBrush}}" ToolTip="{Binding StatusDotText}" />                    <Border x:Name="Hl" CornerRadius="2" Padding="2,0">
                         <TextBlock x:Name="TitleText" Text="{Binding Title}" />
                     </Border>
-                    <TextBlock Text="{Binding Subtitle}" Foreground="{StaticResource MutedBrush}" Margin="6,0,0,0" />
+                    <!-- Обозначение и наименование — через обычный пробел (отрицательный отступ снимает поле подсветки обозначения) -->
+                    <TextBlock Foreground="{StaticResource MutedBrush}" Margin="-2,0,0,0"><Run Text=" " /><Run Text="{Binding Subtitle, Mode=OneWay}" /></TextBlock>
                     <StackPanel Orientation="Horizontal" Margin="10,0,0,0" Visibility="{Binding HasState, Converter={StaticResource BoolVis}}">
                         <Ellipse x:Name="StateDot" Width="8" Height="8" Fill="{Binding StatusDot, Converter={StaticResource DotBrush}}" Margin="0,0,5,0" VerticalAlignment="Center" />
                         <TextBlock Text="{Binding StateText}" FontSize="12" Foreground="{StaticResource MutedBrush}" VerticalAlignment="Center" />
                     </StackPanel>
                 </StackPanel>
                 <HierarchicalDataTemplate.Triggers>
+                    <DataTrigger Binding="{Binding IsMultiSelected}" Value="True">
+                        <Setter TargetName="Row" Property="Background" Value="#CFE0F7" />
+                    </DataTrigger>
                     <DataTrigger Binding="{Binding IsMatch}" Value="True">
                         <Setter TargetName="Hl" Property="Background" Value="{StaticResource MatchBrush}" />
                     </DataTrigger>
@@ -242,8 +246,14 @@
                     <ColumnDefinition Width="*" MinWidth="380" />
                 </Grid.ColumnDefinitions>
 
-                <!-- ============ Дерево изделия ============ -->
-                <DockPanel Background="{StaticResource PanelBrush}">
+                <!-- ============ Слева: дерево изделия сверху, просмотр снизу; граница перетаскивается ============ -->
+                <Grid Background="{StaticResource PanelBrush}">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="*" MinHeight="150" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition x:Name="PreviewRow" Height="*" MinHeight="0" />
+                    </Grid.RowDefinitions>
+                <DockPanel>
                     <Grid DockPanel.Dock="Top" Margin="12,12,12,8">
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="*" />
@@ -259,7 +269,7 @@
                                 Visibility="{Binding Tree.IsFiltered, Converter={StaticResource BoolVis}}" />
                         <StackPanel Grid.Column="1" Orientation="Horizontal" Margin="6,0,0,0">
                             <Button Style="{StaticResource GlyphButton}" Content="&#xE710;" Command="{Binding AddProjectCommand}"
-                                    ToolTip="Добавить проект: выбрать сборку SOLIDWORKS и поставить её на учёт" Margin="0,0,2,0"
+                                    ToolTip="Добавить проект: выбрать сборку SOLIDWORKS и поставить её на учёт (или перетащите файл на дерево)" Margin="0,0,2,0"
                                     Visibility="{Binding CanModify, Converter={StaticResource BoolVis}}" />
                             <Button Style="{StaticResource GlyphButton}" Content="&#xE70D;" Command="{Binding Tree.ExpandAllCommand}"
                                     ToolTip="Развернуть всё дерево" />
@@ -279,24 +289,35 @@
                     </Grid>
                     <WrapPanel DockPanel.Dock="Top" Margin="12,0,12,4">
                         <ToggleButton Style="{StaticResource PillToggle}" IsChecked="{Binding Tree.ShowMine}" ToolTip="Документы, взятые мной в работу">
-                            <TextBlock><Run Text="Взятые мной" /> <Run Text="{Binding Tree.MineCount, Mode=OneWay}" Foreground="{StaticResource MutedBrush}" /></TextBlock>
+                            <StackPanel Orientation="Horizontal"><Ellipse Width="8" Height="8" Fill="{x:Static inf:StatusDotToBrushConverter.Blue}" Margin="0,0,5,1" VerticalAlignment="Center" /><TextBlock><Run Text="Взятые мной" /> <Run Text="{Binding Tree.MineCount, Mode=OneWay}" Foreground="{StaticResource MutedBrush}" /></TextBlock></StackPanel>
                         </ToggleButton>
                         <ToggleButton Style="{StaticResource PillToggle}" IsChecked="{Binding Tree.ShowModified}" ToolTip="Изменённые документы и новые файлы">
-                            <TextBlock><Run Text="Изменённые" /> <Run Text="{Binding Tree.ModifiedCount, Mode=OneWay}" Foreground="{StaticResource MutedBrush}" /></TextBlock>
+                            <StackPanel Orientation="Horizontal"><Ellipse Width="8" Height="8" Fill="{x:Static inf:StatusDotToBrushConverter.Red}" Margin="0,0,5,1" VerticalAlignment="Center" /><TextBlock><Run Text="Изменённые" /> <Run Text="{Binding Tree.ModifiedCount, Mode=OneWay}" Foreground="{StaticResource MutedBrush}" /></TextBlock></StackPanel>
+                        </ToggleButton>
+                        <ToggleButton Style="{StaticResource PillToggle}" IsChecked="{Binding Tree.ShowNeedsResave}" ToolTip="Сборки и чертежи, у которых изменилась модель: взять в работу и пересохранить">
+                            <StackPanel Orientation="Horizontal"><Ellipse Width="8" Height="8" Fill="{x:Static inf:StatusDotToBrushConverter.Yellow}" Margin="0,0,5,1" VerticalAlignment="Center" /><TextBlock><Run Text="Надо пересохранить" /> <Run Text="{Binding Tree.NeedsResaveCount, Mode=OneWay}" Foreground="{StaticResource MutedBrush}" /></TextBlock></StackPanel>
                         </ToggleButton>
                         <ToggleButton Style="{StaticResource PillToggle}" IsChecked="{Binding Tree.ShowOutdated}" ToolTip="Есть новая версия на сервере">
-                            <TextBlock><Run Text="Устаревшие" /> <Run Text="{Binding Tree.OutdatedCount, Mode=OneWay}" Foreground="{StaticResource MutedBrush}" /></TextBlock>
+                            <StackPanel Orientation="Horizontal"><Ellipse Width="8" Height="8" Fill="{x:Static inf:StatusDotToBrushConverter.Pink}" Margin="0,0,5,1" VerticalAlignment="Center" /><TextBlock><Run Text="Устаревшие" /> <Run Text="{Binding Tree.OutdatedCount, Mode=OneWay}" Foreground="{StaticResource MutedBrush}" /></TextBlock></StackPanel>
                         </ToggleButton>
                         <ToggleButton Style="{StaticResource PillToggle}" IsChecked="{Binding Tree.ShowProblems}"
                                       ToolTip="Нет файла, ссылка не учтена, правка без взятия, чертёж с другой версией модели">
-                            <TextBlock><Run Text="Проблемы" /> <Run Text="{Binding Tree.ProblemCount, Mode=OneWay}" Foreground="{StaticResource MutedBrush}" /></TextBlock>
+                            <StackPanel Orientation="Horizontal"><Ellipse Width="8" Height="8" Fill="{x:Static inf:StatusDotToBrushConverter.Purple}" Margin="0,0,5,1" VerticalAlignment="Center" /><TextBlock><Run Text="Проблемы" /> <Run Text="{Binding Tree.ProblemCount, Mode=OneWay}" Foreground="{StaticResource MutedBrush}" /></TextBlock></StackPanel>
+                        </ToggleButton>
+                        <ToggleButton Style="{StaticResource PillToggle}" IsChecked="{Binding Tree.ShowNotInPdm}" ToolTip="Не учтённые в PDM: новые файлы и файлы по ссылке — их можно сдать в хранилище">
+                            <StackPanel Orientation="Horizontal"><Ellipse Width="8" Height="8" Fill="{x:Static inf:StatusDotToBrushConverter.Teal}" Margin="0,0,5,1" VerticalAlignment="Center" /><TextBlock><Run Text="Не учтён" /> <Run Text="{Binding Tree.NotInPdmCount, Mode=OneWay}" Foreground="{StaticResource MutedBrush}" /></TextBlock></StackPanel>
+                        </ToggleButton>
+                        <ToggleButton Style="{StaticResource PillToggle}" IsChecked="{Binding Tree.ShowOther}" ToolTip="Документы, взятые в работу другими пользователями">
+                            <StackPanel Orientation="Horizontal"><Ellipse Width="8" Height="8" Fill="{x:Static inf:StatusDotToBrushConverter.Orange}" Margin="0,0,5,1" VerticalAlignment="Center" /><TextBlock><Run Text="Взят другим" /> <Run Text="{Binding Tree.OtherCount, Mode=OneWay}" Foreground="{StaticResource MutedBrush}" /></TextBlock></StackPanel>
                         </ToggleButton>
                     </WrapPanel>
                     <TextBlock DockPanel.Dock="Top" Text="Ничего не найдено." Style="{StaticResource Muted}" Margin="16,6"
                                Visibility="{Binding Tree.HasNoMatches, Converter={StaticResource BoolVis}}" />
                     <TreeView x:Name="NodeTree" ItemsSource="{Binding Tree.Roots}" BorderThickness="0" Background="{StaticResource PanelBrush}" Padding="6,0,0,6"
                               VirtualizingPanel.IsVirtualizing="True" VirtualizingPanel.VirtualizationMode="Recycling" ScrollViewer.CanContentScroll="True"
-                              ContextMenu="{StaticResource NodeMenu}" PreviewMouseRightButtonDown="OnTreeRightButtonDown">
+                              ContextMenu="{StaticResource NodeMenu}" PreviewMouseRightButtonDown="OnTreeRightButtonDown" PreviewMouseLeftButtonDown="OnTreeLeftButtonDown"
+                              AllowDrop="True" PreviewDragEnter="OnTreeDragOver" PreviewDragOver="OnTreeDragOver"
+                              PreviewDragLeave="OnTreeDragLeave" PreviewDrop="OnTreeDrop">
                         <TreeView.InputBindings>
                             <MouseBinding Gesture="LeftDoubleClick" Command="{Binding OpenStubCommand}" />
                         </TreeView.InputBindings>
@@ -318,15 +339,21 @@
                     </TreeView>
                 </DockPanel>
 
+                    <GridSplitter x:Name="PreviewSplitter" Grid.Row="1" Height="8" HorizontalAlignment="Stretch" Background="Transparent"
+                                  ResizeDirection="Rows" Cursor="SizeNS" ToolTip="Перетащите, чтобы изменить высоту просмотра"
+                                  Visibility="{Binding Panel.ShowPreview, Converter={StaticResource BoolVis}}" />
+
+                    <!-- Просмотр (eDrawings) выбранного в дереве узла -->
+                    <inf:ModelPreview x:Name="Preview" Grid.Row="2" Margin="8,0,8,8"
+                                      FilePath="{Binding Panel.Node.PreviewPath}" EmptyText="{Binding Panel.Node.PreviewEmptyText}"
+                                      Suspended="{Binding DataContext.Busy.IsBusy, ElementName=Root}"
+                                      Visibility="{Binding Panel.ShowPreview, Converter={StaticResource BoolVis}}" />
+                </Grid>
+
                 <GridSplitter Grid.Column="1" Width="1" Background="{StaticResource BorderBrush}" HorizontalAlignment="Stretch" ResizeBehavior="PreviousAndNext" />
 
-                <!-- ============ Правая часть: карточка узла сверху, просмотр снизу; граница перетаскивается ============ -->
+                <!-- ============ Правая часть: карточка узла ============ -->
                 <Grid Grid.Column="2" x:Name="PanelBody" Margin="22,16,20,10" DataContext="{Binding Panel}">
-                    <Grid.RowDefinitions>
-                        <RowDefinition Height="*" MinHeight="200" />
-                        <RowDefinition x:Name="SplitterRow" Height="Auto" />
-                        <RowDefinition x:Name="PreviewRow" Height="*" MinHeight="0" />
-                    </Grid.RowDefinitions>
                     <TextBlock Text="Выберите документ в дереве." Style="{StaticResource Muted}" HorizontalAlignment="Center" VerticalAlignment="Center"
                                Visibility="{Binding HasNode, Converter={StaticResource BoolVis}, ConverterParameter=invert}" />
                     <DockPanel Grid.Row="0" Visibility="{Binding HasNode, Converter={StaticResource BoolVis}}">
@@ -393,15 +420,6 @@
                             </TabControl.ContentTemplate>
                         </TabControl>
                     </DockPanel>
-
-                    <GridSplitter x:Name="PreviewSplitter" Grid.Row="1" Height="8" HorizontalAlignment="Stretch" Background="Transparent"
-                                  ResizeDirection="Rows" Cursor="SizeNS" ToolTip="Перетащите, чтобы изменить высоту просмотра"
-                                  Visibility="{Binding ShowPreview, Converter={StaticResource BoolVis}}" />
-
-                    <!-- Просмотр (eDrawings) -->
-                    <inf:ModelPreview x:Name="Preview" Grid.Row="2" FilePath="{Binding Node.OpenablePath}" EmptyText="{Binding Node.PreviewEmptyText}"
-                                      Suspended="{Binding DataContext.Busy.IsBusy, ElementName=Root}"
-                                      Visibility="{Binding ShowPreview, Converter={StaticResource BoolVis}}" />
                 </Grid>
             </Grid>
         </Grid>

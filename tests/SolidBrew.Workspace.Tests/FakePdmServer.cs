@@ -466,7 +466,7 @@ public sealed class FakePdmApi : IPdmApi
     public Task<List<DocumentSummaryDto>> SearchDocumentsAsync(string? q = null, Guid? projectId = null, string? author = null, bool includeUnused = false, int? limit = null, bool roots = false, CancellationToken ct = default) =>
         Run(() => _s.Docs.Values
             .Where(d => projectId == null || d.ProjectId == projectId)
-            .Where(d => includeUnused || d.Status == DocumentStatus.Active)
+            .Where(d => d.Status != DocumentStatus.Deleted && (includeUnused || d.Status == DocumentStatus.Active))
             .Where(d => !roots || (d.Status == DocumentStatus.Active && d.Latest.Kind == DocumentKind.Assembly && _s.UsedInCount(d) == 0))
             .Select(_s.Summary)
             .Where(d => q == null || d.RelPath.Contains(q, StringComparison.OrdinalIgnoreCase) || (d.Designation ?? "").Contains(q, StringComparison.OrdinalIgnoreCase))
@@ -514,13 +514,29 @@ public sealed class FakePdmApi : IPdmApi
         return _s.Summary(d);
     });
 
+    public Task DeleteDocumentAsync(Guid id, CancellationToken ct = default) => Run(() =>
+    {
+        if (User.Role != UserRole.Admin) throw FakePdmServer.Error(403, "Операция доступна только администратору PDM.");
+        var d = Doc(id);
+        if (d.Status == DocumentStatus.Deleted) throw FakePdmServer.Error(404, "Документ не найден.");
+        if (d.Lock != null && d.Lock.UserId != User.Id)
+            throw new PdmApiException(409, $"Документ взят в работу: {d.Lock.UserDisplayName}.", new ErrorResponse { Message = "Документ занят.", Lock = FakePdmServer.Clone(d.Lock) });
+        var usedIn = _s.Docs.Values.Where(p => p.Id != id && p.Status != DocumentStatus.Deleted)
+            .SelectMany(p => p.Versions.Where(v => v.Refs.Any(r => r.Child == id)).Select(v => $"«{p.Latest.RelPath}» v{v.Number}")).ToList();
+        if (usedIn.Count > 0)
+            throw FakePdmServer.Error(409, $"Документ «{d.Latest.RelPath}» нельзя удалить: на него ссылаются опубликованные версии — {string.Join(", ", usedIn)}. Пометьте его «не используется».",
+                new ProblemDto { Code = ProblemCodes.ReferencedByPublished, Message = "Есть ссылки.", DocumentId = id });
+        d.Lock = null;
+        d.Status = DocumentStatus.Deleted;
+    });
+
     public Task<List<string>> GetMissingObjectsAsync(IEnumerable<string> hashes, CancellationToken ct = default) =>
         Run(() => hashes.Distinct().Where(h => !_s.Objects.ContainsKey(h)).ToList());
 
     public Task<List<VersionByHashDto>> FindVersionsByHashAsync(IEnumerable<string> hashes, CancellationToken ct = default) => Run(() =>
     {
         var set = new HashSet<string>(hashes);
-        return _s.Docs.Values.SelectMany(d => d.Versions.Where(v => set.Contains(v.Sha256))
+        return _s.Docs.Values.Where(d => d.Status != DocumentStatus.Deleted).SelectMany(d => d.Versions.Where(v => set.Contains(v.Sha256))
             .Select(v => new VersionByHashDto { Sha256 = v.Sha256, Version = v.Number, Document = _s.Summary(d) })).ToList();
     });
 

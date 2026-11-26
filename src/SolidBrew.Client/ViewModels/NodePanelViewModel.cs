@@ -56,7 +56,7 @@ public sealed partial class NodePanelViewModel : ObservableObject
         _context = null;
         Node = node;
 
-        var (primary, more) = NodeActionRules.For(node, canModify, isProductRoot);
+        var (primary, more) = NodeActionRules.For(node, canModify, isProductRoot, _host.Session.IsAdmin);
         PrimaryActions.ReplaceWith(primary.Select(Make));
         MoreActions.ReplaceWith(more.Select(Make));
         // Контекстное меню дерева: действия узла и всегда — «Добавить проект…».
@@ -88,6 +88,27 @@ public sealed partial class NodePanelViewModel : ObservableObject
         OnPropertyChanged(nameof(HasMore));
         OnPropertyChanged(nameof(HasTabs));
         _ = LoadSelectedAsync();
+    }
+
+    /// <summary>
+    /// Меню дерева для нескольких выделенных узлов: действия, выполняемые разом (<see cref="NodeActionRules.Batch"/>),
+    /// применимые хотя бы к одному из них, — с числом узлов, к которым применятся.
+    /// </summary>
+    public void ShowSelectionMenu(IReadOnlyList<ProductNodeViewModel> nodes, bool canModify, Func<ProductNodeViewModel, bool> isProductRoot)
+    {
+        var menu = new List<NodeAction>();
+        foreach (var kind in NodeActionRules.Batch)
+        {
+            var count = nodes.Count(n => NodeActionRules.Applies(n, kind, canModify, isProductRoot(n)));
+            if (count == 0) continue;
+            var text = NodeActionRules.Text(kind);
+            var dots = text.EndsWith('…');
+            // «Сдать» сдаёт всё изменённое рабочей папки (окно сдачи), без числа.
+            var label = kind == NodeActionKind.Checkin ? text : $"{text.TrimEnd('…')} ({count} из {nodes.Count}){(dots ? "…" : string.Empty)}";
+            menu.Add(new NodeAction(kind, label, NodeActionRules.Glyph(kind), _commands(kind), NodeActionRules.ToolTip(kind)));
+        }
+        if (canModify) menu.Add(Make(NodeActionKind.AddProject));
+        MenuActions.ReplaceWith(menu);
     }
 
     private NodeAction Make(NodeActionKind kind) =>

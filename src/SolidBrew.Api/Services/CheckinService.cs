@@ -145,6 +145,8 @@ public sealed class CheckinService(NpgsqlDataSource db, IBlobStore blobs, Checki
             label = $"«{doc.CurrentRelPath}»";
             if (doc.Status == "unused")
                 Add(ProblemCodes.Validation, $"Документ {label} помечен «не используется». Снимите пометку и повторите сдачу.", item);
+            if (doc.Status == "deleted")
+                Add(ProblemCodes.Validation, $"Документ {label} удалён из PDM администратором — сдать его новую версию нельзя. Поставьте файл на учёт заново, если он нужен.", item);
             if (doc.ProjectKind == "library" && !user.IsAdmin)
                 Add(ProblemCodes.LibraryReadOnly, $"Документ {label} находится в библиотеке «{doc.ProjectName}» — изменять библиотеку может только администратор. Исключите документ из сдачи или обратитесь к администратору.", item);
 

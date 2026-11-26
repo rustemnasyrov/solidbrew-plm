@@ -24,10 +24,12 @@ namespace SolidBrew.Core.Contracts
         Other,
     }
 
-    /// <summary>Статус документа: используется или помечен «не используется».</summary>
+    /// <summary>Статус документа: используется, помечен «не используется» или удалён администратором.</summary>
     public enum DocumentStatus
     {
         Active,
         Unused,
+        /// <summary>Удалён администратором: нет в поиске и списках, история версий сохранена.</summary>
+        Deleted,
     }
 }

@@ -13,14 +13,16 @@ public sealed partial class CliApp
         var project = await ResolveProjectAsync(_args.Value("project")
             ?? throw new CliException("Укажите проект: --project <имя или ID>. Список: sbpdm projects.")).ConfigureAwait(false);
         var extras = _args.Values("extra").Select(FullPath).ToList();
+        var options = _args.Value("saved-as") is { } savedAs ? new ImportOptions { HeadSavedPath = savedAs } : null;
 
-        using var report = await Service.PrepareImportAsync(head, extras, Progress, _ct).ConfigureAwait(false);
+        using var report = await Service.PrepareImportAsync(head, extras, Progress, _ct, options).ConfigureAwait(false);
 
         // Решения пользователя.
         foreach (var r in report.Documents.SelectMany(d => d.References))
         {
             if (r.Category == ImportReferenceCategory.NameOnly && _args.Flag("accept-name-matches")) r.Accept = true;
             if (r.Category == ImportReferenceCategory.OutsideFolders && _args.Flag("accept-outside")) r.Accept = true;
+            if (r.Category == ImportReferenceCategory.Relocated && _args.Flag("accept-relocated")) r.Accept = true;
         }
         foreach (var choice in _args.Values("choose"))
         {
@@ -65,7 +67,7 @@ public sealed partial class CliApp
         {
             return Stop(NeedsAnswer, report.CanExecute(allowMissing)
                 ? "Проверьте отчёт и повторите с --yes, чтобы поставить комплект на учёт."
-                : "Разрешите проблемы (--choose, --accept-name-matches, --accept-outside, --allow-missing) и повторите с --yes.");
+                : "Разрешите проблемы (--choose, --accept-name-matches, --accept-outside, --accept-relocated, --allow-missing) и повторите с --yes.");
         }
         if (!report.CanExecute(allowMissing))
             return Stop(Failed, "Поставить на учёт нельзя: есть нерешённые проблемы (см. отчёт).");
@@ -95,7 +97,7 @@ public sealed partial class CliApp
             d.SourcePath, d.RelPath, d.Cad, d.Kind, d.Designation, d.Name, d.Sha256, d.Size, d.CadVersion, d.IsHead, d.IsExtra,
             d.Disposition,
             existing = d.Existing == null ? null : new { documentId = d.Existing.Document.Id, version = d.Existing.Version, project = d.Existing.Document.ProjectName, relPath = d.Existing.Document.RelPath },
-            references = d.References.Select(r => new { r.SavedPath, r.Category, r.TargetPath, r.Candidates, r.Accept, r.Chosen, target = r.EffectiveTarget }),
+            references = d.References.Select(r => new { r.SavedPath, r.Category, r.TargetPath, r.MovedFrom, r.MovedTo, r.Candidates, r.Accept, r.Chosen, target = r.EffectiveTarget }),
         }),
         problems = report.Problems,
     };
@@ -138,6 +140,8 @@ public sealed partial class CliApp
             $"{From(r)}  =  {r.TargetPath}  [{(r.Accept ? "подтверждено" : "нужно подтверждение: --accept-outside или добавьте папку --extra")}]");
         Group(ImportReferenceCategory.NameOnly, "Только по имени файла", r =>
             $"{From(r)}  ≈  {r.TargetPath}  [{(r.Accept ? "подтверждено" : "нужно подтверждение: --accept-name-matches")}]");
+        Group(ImportReferenceCategory.Relocated, "Папка перенесена — на прежнем месте относительно документа", r =>
+            $"{From(r)}  ≈  {r.TargetPath}  [{r.MovedFrom} → {r.MovedTo}; {(r.Accept ? "подтверждено" : "нужно подтверждение: --accept-relocated")}]");
         Group(ImportReferenceCategory.Ambiguous, "Неоднозначно", r =>
             $"{From(r)}: {(r.EffectiveTarget != null ? "выбран " + r.EffectiveTarget : "выберите: --choose \"" + r.FileName + "=<путь>\"")}; варианты: {string.Join("; ", r.Candidates)}");
         Group(ImportReferenceCategory.Missing, "Отсутствуют", r => $"{From(r)}  [не найден; --allow-missing — поставить без него]");

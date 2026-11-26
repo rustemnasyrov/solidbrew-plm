@@ -157,6 +157,27 @@
                         </DataGrid>
                     </DockPanel>
                 </TabItem>
+                <TabItem Header="{Binding RelocatedHeader}" Visibility="{Binding Relocated.Count, Converter={StaticResource CountVis}}">
+                    <DockPanel>
+                        <TextBlock DockPanel.Dock="Top" Style="{StaticResource Muted}" Margin="4" TextWrapping="Wrap"
+                                   Text="По сохранённому пути файла нет, но документ перенесён (папку переименовали или переместили), и файл найден на том же месте относительно него, что и до переноса. PDM не принимает его сама — подтвердите, что это тот файл." />
+                        <DataGrid ItemsSource="{Binding Relocated}">
+                            <DataGrid.Columns>
+                                <DataGridTemplateColumn Header="Подтвердить" Width="90">
+                                    <DataGridTemplateColumn.CellTemplate>
+                                        <DataTemplate>
+                                            <CheckBox IsChecked="{Binding Accept, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" HorizontalAlignment="Center" />
+                                        </DataTemplate>
+                                    </DataGridTemplateColumn.CellTemplate>
+                                </DataGridTemplateColumn>
+                                <DataGridTextColumn Header="Документ" Binding="{Binding SourceName}" Width="*" />
+                                <DataGridTextColumn Header="Ссылка (как записана)" Binding="{Binding SavedPath}" Width="2*" />
+                                <DataGridTextColumn Header="Найден на прежнем месте" Binding="{Binding TargetPath}" Width="2*" />
+                                <DataGridTextColumn Header="Перенос папки" Binding="{Binding MovedText}" Width="2*" />
+                            </DataGrid.Columns>
+                        </DataGrid>
+                    </DockPanel>
+                </TabItem>
                 <TabItem Header="{Binding AmbiguousHeader}">
                     <DockPanel>
                         <TextBlock DockPanel.Dock="Top" Style="{StaticResource Muted}" Margin="4"

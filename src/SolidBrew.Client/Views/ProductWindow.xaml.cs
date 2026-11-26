@@ -61,9 +61,67 @@ public partial class ProductWindow : Window
         while (d != null && d is not TreeViewItem) d = d is Visual or System.Windows.Media.Media3D.Visual3D ? VisualTreeHelper.GetParent(d) : LogicalTreeHelper.GetParent(d);
         if (d is TreeViewItem item)
         {
+            // Щелчок по одному из нескольких выделенных — выделение сохраняется, меню относится ко всем.
+            if (item.DataContext is ProductNodeViewModel { IsMultiSelected: true } && Vm?.Tree.HasMultiSelection == true) return;
             item.IsSelected = true;
             item.Focus();
         }
+    }
+
+    /// <summary>Ctrl + щелчок — добавить узел в выделение (или убрать), Shift + щелчок — выделить диапазон.</summary>
+    private void OnTreeLeftButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        var mods = Keyboard.Modifiers;
+        var toggle = mods.HasFlag(ModifierKeys.Control);
+        var range = mods.HasFlag(ModifierKeys.Shift);
+        if (!toggle && !range || Vm is not { } vm) return;
+        var d = e.OriginalSource as DependencyObject;
+        while (d != null && d is not TreeViewItem)
+        {
+            if (d is System.Windows.Controls.Primitives.ToggleButton) return; // стрелка раскрытия
+            d = d is Visual or System.Windows.Media.Media3D.Visual3D ? VisualTreeHelper.GetParent(d) : LogicalTreeHelper.GetParent(d);
+        }
+        if (d is not TreeViewItem { DataContext: ProductNodeViewModel node } item) return;
+        vm.Tree.ExtendSelection(node, toggle, range);
+        item.Focus();
+        e.Handled = true;
+    }
+
+    /// <summary>Файлы CAD из Проводника, перетаскиваемые на дерево (пусто — перетаскивание не принимается).</summary>
+    private IReadOnlyList<string> DroppedProjectFiles(DragEventArgs e) =>
+        Vm != null && e.Data.GetDataPresent(DataFormats.FileDrop) && e.Data.GetData(DataFormats.FileDrop) is string[] paths
+            ? Vm.DroppableProjectFiles(paths)
+            : Array.Empty<string>();
+
+    private void OnTreeDragOver(object sender, DragEventArgs e)
+    {
+        var ok = DroppedProjectFiles(e).Count > 0;
+        e.Effects = ok ? DragDropEffects.Copy : DragDropEffects.None;
+        SetDropHighlight(ok);
+        e.Handled = true;
+    }
+
+    private void OnTreeDragLeave(object sender, DragEventArgs e) => SetDropHighlight(false);
+
+    /// <summary>Перетаскивание сборки (детали, чертежа) на дерево — «Добавить проект» с этим файлом.</summary>
+    private void OnTreeDrop(object sender, DragEventArgs e)
+    {
+        SetDropHighlight(false);
+        var files = DroppedProjectFiles(e);
+        e.Handled = true;
+        if (files.Count == 0 || Vm is not { } vm) return;
+        // Окно постановки модальное: открываем его после завершения перетаскивания, чтобы не держать Проводник.
+        Dispatcher.BeginInvoke(async () =>
+        {
+            Activate();
+            await vm.AddProjectsAsync(files);
+        });
+    }
+
+    private void SetDropHighlight(bool on)
+    {
+        NodeTree.BorderThickness = new Thickness(on ? 2 : 0);
+        NodeTree.BorderBrush = on ? SolidBrew.Client.Infrastructure.StatusDotToBrushConverter.Blue : null;
     }
 
     private void OnSwitcherOpened(object? sender, EventArgs e) => Dispatcher.BeginInvoke(() => SwitcherSearch.Focus());

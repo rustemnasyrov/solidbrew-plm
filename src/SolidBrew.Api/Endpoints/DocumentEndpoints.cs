@@ -62,6 +62,8 @@ internal static class DocumentEndpoints
 
         app.MapPost(ApiRoutes.Templates.DocumentUnused, MarkUnusedAsync);
 
+        app.MapDelete(ApiRoutes.Templates.Document, DeleteAsync);
+
         app.MapPost(ApiRoutes.Templates.VersionsByHash, async (VersionsByHashRequest request, NpgsqlDataSource db, CancellationToken ct) =>
         {
             var hashes = (request.Hashes ?? []).Distinct(StringComparer.Ordinal).ToList();
@@ -79,7 +81,8 @@ internal static class DocumentEndpoints
             {
                 if (!summaries.TryGetValue(r.DocumentId, out var summary))
                     summaries[r.DocumentId] = summary = await DocumentQueries.GetSummaryAsync(connection, r.DocumentId);
-                if (summary != null) response.Items.Add(new VersionByHashDto { Sha256 = r.Sha256, Version = r.Number, Document = summary });
+                // Удалённый документ не подставляется при постановке на учёт: файл ставится заново.
+                if (summary is { Status: not DocumentStatus.Deleted }) response.Items.Add(new VersionByHashDto { Sha256 = r.Sha256, Version = r.Number, Document = summary });
             }
             return Results.Ok(response);
         });
@@ -87,6 +90,47 @@ internal static class DocumentEndpoints
 
     private static IResult VersionNotFound(Guid id, int version) =>
         ApiErrors.NotFound($"Версия v{version} документа {id} не найдена. Обновите карточку документа.");
+
+    /// <summary>
+    /// Удалить документ (только администратор, ТЗ 7.9): нельзя, если на любую его версию ссылается опубликованная версия
+    /// другого неудалённого документа или он взят другим. Документ получает статус «удалён» — пропадает из поиска и списков,
+    /// путь в проекте освобождается; версии и журнал остаются (опубликованное не удаляется).
+    /// </summary>
+    private static async Task<IResult> DeleteAsync(Guid id, CurrentUser user, NpgsqlDataSource db, CancellationToken ct)
+    {
+        if (user.RequireAdmin() is { } denied) return denied;
+
+        await using var connection = await db.OpenConnectionAsync(ct);
+        await using var tx = await connection.BeginTransactionAsync(ct);
+        var doc = await connection.QuerySingleOrDefaultAsync<(Guid Id, string RelPath, string Status)>(
+            "SELECT id, current_rel_path, status FROM documents WHERE id = @id FOR UPDATE", new { id }, tx);
+        if (doc.Id == Guid.Empty || doc.Status == "deleted") return ApiErrors.DocumentNotFound(id);
+
+        var locks = await DocumentQueries.GetLocksAsync(connection, [id], tx, forUpdate: true);
+        if (locks.FirstOrDefault(l => l.UserId != user.Id) is { } other)
+            return ApiErrors.Conflict(ProblemCodes.LockedByOther, ApiErrors.LockedByOtherMessage(doc.RelPath, other), id, other);
+
+        var usedIn = (await connection.QueryAsync<(string RelPath, int Number)>("""
+            SELECT DISTINCT pd.current_rel_path, pv.number
+            FROM version_refs r
+            JOIN versions pv ON pv.id = r.version_id
+            JOIN documents pd ON pd.id = pv.document_id
+            WHERE r.child_document_id = @id AND pd.id <> @id AND pd.status <> 'deleted'
+            ORDER BY 1, 2
+            """, new { id }, tx)).ToList();
+        if (usedIn.Count > 0)
+        {
+            var list = string.Join(", ", usedIn.Take(5).Select(u => $"«{u.RelPath}» v{u.Number}")) + (usedIn.Count > 5 ? $" и ещё {usedIn.Count - 5}" : string.Empty);
+            return ApiErrors.Conflict(ProblemCodes.ReferencedByPublished,
+                $"Документ «{doc.RelPath}» нельзя удалить: на него ссылаются опубликованные версии — {list}. Пометьте его «не используется».", id);
+        }
+
+        await connection.ExecuteAsync("DELETE FROM locks WHERE document_id = @id", new { id }, tx);
+        await connection.ExecuteAsync("UPDATE documents SET status = 'deleted' WHERE id = @id", new { id }, tx);
+        await Journal.WriteAsync(connection, user.Id, JournalActions.Deleted, id, null, new { relPath = doc.RelPath }, tx);
+        await tx.CommitAsync(ct);
+        return Results.NoContent();
+    }
 
     private static async Task<IResult> MarkUnusedAsync(Guid id, MarkUnusedRequest request, CurrentUser user, NpgsqlDataSource db, CancellationToken ct)
     {
@@ -98,7 +142,7 @@ internal static class DocumentEndpoints
             SELECT d.id, d.project_id, d.current_rel_path, d.rel_key, d.status, p.kind, p.name
             FROM documents d JOIN projects p ON p.id = d.project_id WHERE d.id = @id FOR UPDATE OF d
             """, new { id }, tx);
-        if (doc.Id == Guid.Empty) return ApiErrors.DocumentNotFound(id);
+        if (doc.Id == Guid.Empty || doc.Status == "deleted") return ApiErrors.DocumentNotFound(id);
         if (doc.ProjectKind == "library" && !user.IsAdmin)
             return ApiErrors.Forbidden($"Документ «{doc.RelPath}» находится в библиотеке «{doc.ProjectName}» — изменять библиотеку может только администратор.", ProblemCodes.LibraryReadOnly);
 

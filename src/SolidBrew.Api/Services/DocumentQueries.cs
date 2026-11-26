@@ -50,7 +50,7 @@ internal static class DocumentQueries
         var authorPattern = authorText is null ? null : "%" + EscapeLike(authorText) + "%";
         var rows = await connection.QueryAsync<SummaryRow>(SummarySelect + """
 
-            WHERE (@includeUnused OR d.status = 'active')
+            WHERE d.status <> 'deleted' AND (@includeUnused OR d.status = 'active')
               AND (NOT @roots OR (d.kind = 'assembly' AND d.status = 'active' AND ui.used_in_count = 0))
               AND (CAST(@projectId AS uuid) IS NULL OR d.project_id = @projectId)
               AND (CAST(@pattern AS text) IS NULL

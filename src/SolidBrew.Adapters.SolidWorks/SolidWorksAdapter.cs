@@ -374,6 +374,226 @@ public sealed class SolidWorksAdapter : ICadAdapter, IDisposable
         }, ct);
     }
 
+    // ------------------------------------------------------------------ Запись свойств
+
+    /// <summary>
+    /// Записать свойства (<c>CustomPropertyManager.Add3</c>, тип «Текст», замена значения) и сохранить документ (<c>Save3</c>).
+    /// Закрытый документ открывается невидимым и закрывается: сборка — облегчённой (выборочное открытие без компонентов
+    /// сохранило бы их скрытыми), чертёж — обычным. Если в сборке не найден компонент или у чертежа модель, запись отменяется:
+    /// SOLIDWORKS сохранил бы их подавленными. Уже открытый документ меняется в памяти и сохраняется, только если он открыт
+    /// не «только для чтения» и в нём нет несохранённых правок. При ошибке до сохранения файл не меняется.
+    /// </summary>
+    public Task WritePropertiesAsync(string documentPath, IReadOnlyList<CadPropertyChange> changes, CancellationToken ct = default)
+    {
+        if (changes == null) throw new ArgumentNullException(nameof(changes));
+        var full = CheckFile(documentPath);
+        if (changes.Count == 0) return Task.CompletedTask;
+        return RunAsync(s =>
+        {
+            WriteProperties(s, full, changes, ct);
+            return true;
+        }, ct);
+    }
+
+    private static void WriteProperties(SwSession s, string full, IReadOnlyList<CadPropertyChange> changes, CancellationToken ct)
+    {
+        var file = Path.GetFileName(full);
+        if ((File.GetAttributes(full) & FileAttributes.ReadOnly) != 0)
+            throw new CadException($"Файл «{file}» только для чтения: возьмите документ в работу, чтобы изменить свойства.");
+
+        ComObj doc;
+        string? openedTitle = null;
+        var open = s.FindOpenByPath(full);
+        if (open != null)
+        {
+            doc = open.Doc;
+            if (doc.CallBool("IsOpenedReadOnly"))
+                throw new CadException($"«{file}» открыт в SOLIDWORKS только для чтения (открыт до взятия в работу). Закройте его в SOLIDWORKS и повторите.");
+            if (doc.CallBool("GetSaveFlag"))
+                throw new CadException($"В «{file}» в SOLIDWORKS есть несохранённые изменения. Сохраните или закройте документ и повторите — иначе они сохранились бы вместе со свойствами.");
+        }
+        else
+        {
+            if (s.FindSameNameElsewhere(full) is { Count: > 0 } others)
+                throw new CadException($"В SOLIDWORKS уже открыт документ «{others[0].FileName}» из папки «{Path.GetDirectoryName(others[0].Path)}». " +
+                                       "Закройте его (и сборки, в которые он входит) и повторите.");
+            var type = SwConst.DocTypeOf(full);
+            var options = SwConst.OpenSilent | (type == SwConst.DocAssembly ? SwConst.OpenOverrideDefaultLoadLightweight | SwConst.OpenLoadLightweight : 0);
+            using (s.HideNewDocuments(type))
+            {
+                doc = s.OpenDoc6(full, options, string.Empty, out _, out _);
+            }
+            openedTitle = doc.CallString("GetTitle") ?? string.Empty;
+            if (doc.CallBool("IsOpenedReadOnly"))
+            {
+                s.CloseDoc(full, openedTitle);
+                throw new CadException($"SOLIDWORKS открыл «{file}» только для чтения (файл занят другой программой?). Свойства не записаны.");
+            }
+        }
+
+        try
+        {
+            if (openedTitle != null) CheckNothingMissing(s, doc, file);
+            ct.ThrowIfCancellationRequested();
+            var ext = doc.CallObj("Extension") ?? throw new CadException("SOLIDWORKS не вернул ModelDocExtension.");
+            foreach (var change in changes)
+            {
+                var manager = ext.CallObj("CustomPropertyManager", change.Configuration ?? string.Empty)
+                              ?? throw new CadException($"В «{file}» нет конфигурации «{change.Configuration}».");
+                var code = manager.CallInt("Add3", change.Name, SwConst.CustomInfoText, change.Value ?? string.Empty, SwConst.CustomPropertyReplaceValue);
+                var args = new object?[] { change.Name, false, string.Empty, string.Empty };
+                manager.CallRef("Get4", args, 2, 3);
+                if ((code != 0 && code != 1) || !string.Equals(ComObj.AsString(args[2]) ?? string.Empty, change.Value ?? string.Empty, StringComparison.Ordinal))
+                    throw new CadException($"SOLIDWORKS не записал свойство «{change.Name}»{Where(change)} в «{file}» (код {code}). Файл не сохранён.");
+            }
+
+            var save = new object?[] { SwConst.SaveAsOptionsSilent, 0, 0 };
+            var ok = ComObj.AsBool(doc.CallRef("Save3", save, 1, 2));
+            if (!ok || ComObj.AsInt(save[1]) != 0)
+                throw new CadException($"SOLIDWORKS не сохранил «{file}» (ошибки {ComObj.AsInt(save[1])}, предупреждения {ComObj.AsInt(save[2])}).");
+        }
+        finally
+        {
+            if (openedTitle != null) s.CloseDoc(full, openedTitle);
+        }
+
+        static string Where(CadPropertyChange c) => string.IsNullOrEmpty(c.Configuration) ? string.Empty : $" (конфигурация «{c.Configuration}»)";
+    }
+
+    // ------------------------------------------------------------------ Удаление ссылок
+
+    /// <summary>
+    /// Убрать ссылки: у сборки — удалить компоненты верхнего уровня с этими файлами (<c>EditDelete</c>); у детали —
+    /// разорвать внешние ссылки (<c>BreakAllExternalFileReferences2</c>: SOLIDWORKS разрывает все сразу и оставляет их в файле
+    /// разорванными) и записать имена файлов в свойство <see cref="DocumentProperties.RemovedReferencesKey"/>. Затем сохранить.
+    /// Документ должен быть закрыт в SOLIDWORKS. Чертёж не поддерживается.
+    /// </summary>
+    public Task RemoveReferencesAsync(string documentPath, IReadOnlyList<string> savedPaths, CancellationToken ct = default)
+    {
+        if (savedPaths == null) throw new ArgumentNullException(nameof(savedPaths));
+        var full = CheckFile(documentPath);
+        if (SwConst.DocTypeOf(full) == SwConst.DocDrawing)
+            throw new CadException($"У чертежа «{Path.GetFileName(full)}» ссылки — это виды модели. Удалите виды в SOLIDWORKS.");
+        if (savedPaths.Count == 0) return Task.CompletedTask;
+        return RunAsync(s =>
+        {
+            RemoveReferences(s, full, savedPaths, ct);
+            return true;
+        }, ct);
+    }
+
+    private static void RemoveReferences(SwSession s, string full, IReadOnlyList<string> savedPaths, CancellationToken ct)
+    {
+        var file = Path.GetFileName(full);
+        if ((File.GetAttributes(full) & FileAttributes.ReadOnly) != 0)
+            throw new CadException($"Файл «{file}» только для чтения: возьмите документ в работу.");
+        if (s.FindOpenByPath(full) != null)
+            throw new CadException($"«{file}» открыт в SOLIDWORKS. Закройте его и повторите.");
+        if (s.FindSameNameElsewhere(full) is { Count: > 0 } others)
+            throw new CadException($"В SOLIDWORKS уже открыт документ «{others[0].FileName}» из папки «{Path.GetDirectoryName(others[0].Path)}». Закройте его и повторите.");
+
+        var type = SwConst.DocTypeOf(full);
+        var options = SwConst.OpenSilent | (type == SwConst.DocAssembly ? SwConst.OpenOverrideDefaultLoadLightweight | SwConst.OpenLoadLightweight : 0);
+        ComObj doc;
+        using (s.HideNewDocuments(type))
+        {
+            doc = s.OpenDoc6(full, options, string.Empty, out _, out _);
+        }
+        var title = doc.CallString("GetTitle") ?? string.Empty;
+        try
+        {
+            if (doc.CallBool("IsOpenedReadOnly"))
+                throw new CadException($"SOLIDWORKS открыл «{file}» только для чтения. Ссылки не убраны.");
+            ct.ThrowIfCancellationRequested();
+            var names = savedPaths.Select(CadReference.FileNameOf).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+            var ext = doc.CallObj("Extension") ?? throw new CadException("SOLIDWORKS не вернул ModelDocExtension.");
+
+            if (type == SwConst.DocAssembly)
+            {
+                // Компоненты верхнего уровня (ссылки сборки — на её прямые компоненты), в том числе ненайденные (подавленные).
+                var components = ComObj.AsObjects(doc.Call("GetComponents", true))
+                    .Where(c => !c.CallBool("IsVirtual"))
+                    .Select(c => (Comp: c, Name: Path.GetFileName(c.CallString("GetPathName") ?? string.Empty)))
+                    .Where(c => names.Contains(c.Name, StringComparer.OrdinalIgnoreCase)).ToList();
+                var missing = names.Where(n => components.All(c => !string.Equals(c.Name, n, StringComparison.OrdinalIgnoreCase))).ToList();
+                if (missing.Count > 0)
+                    throw new CadException($"В сборке «{file}» нет компонентов {string.Join(", ", missing.Select(n => "«" + n + "»"))} — это не ссылка на компонент. Уберите её в SOLIDWORKS.");
+                doc.Call("ClearSelection2", true);
+                var first = true;
+                foreach (var (comp, _) in components)
+                {
+                    // SelectData — пустой объект: при позднем связывании null нужно передать как пустой IDispatch.
+                    if (!comp.CallBool("Select4", !first, new System.Runtime.InteropServices.DispatchWrapper(null), false))
+                        throw new CadException($"SOLIDWORKS не выделил компонент «{comp.CallString("Name2")}» в «{file}». Ссылки не убраны.");
+                    first = false;
+                }
+                // swDeleteSelectionOptions_e: 0 — только выделенное (без поглощённых элементов и дочерних).
+                if (!ext.CallBool("DeleteSelection2", 0)) doc.Call("EditDelete");
+                var left = ComObj.AsObjects(doc.Call("GetComponents", true))
+                    .Select(c => Path.GetFileName(c.CallString("GetPathName") ?? string.Empty))
+                    .Where(n => names.Contains(n, StringComparer.OrdinalIgnoreCase)).ToList();
+                if (left.Count > 0)
+                    throw new CadException($"SOLIDWORKS не удалил компоненты «{string.Join(", ", left)}» из «{file}». Ссылки не убраны.");
+            }
+            else
+            {
+                ext.Call("BreakAllExternalFileReferences2", false);
+                var manager = ext.CallObj("CustomPropertyManager", string.Empty) ?? throw new CadException($"В «{file}» нет свойств уровня файла.");
+                var args = new object?[] { DocumentProperties.RemovedReferencesKey, false, string.Empty, string.Empty };
+                manager.CallRef("Get4", args, 2, 3);
+                var current = new Dictionary<string, Dictionary<string, string>>
+                {
+                    [string.Empty] = new() { [DocumentProperties.RemovedReferencesKey] = ComObj.AsString(args[2]) ?? string.Empty },
+                };
+                var value = DocumentProperties.WithRemovedReferences(current, names);
+                var code = manager.CallInt("Add3", DocumentProperties.RemovedReferencesKey, SwConst.CustomInfoText, value, SwConst.CustomPropertyReplaceValue);
+                if (code != 0 && code != 1)
+                    throw new CadException($"SOLIDWORKS не записал свойство «{DocumentProperties.RemovedReferencesKey}» в «{file}» (код {code}).");
+            }
+
+            var save = new object?[] { SwConst.SaveAsOptionsSilent, 0, 0 };
+            var ok = ComObj.AsBool(doc.CallRef("Save3", save, 1, 2));
+            if (!ok || ComObj.AsInt(save[1]) != 0)
+                throw new CadException($"SOLIDWORKS не сохранил «{file}» (ошибки {ComObj.AsInt(save[1])}, предупреждения {ComObj.AsInt(save[2])}).");
+        }
+        finally
+        {
+            s.CloseDoc(full, title);
+        }
+    }
+
+    /// <summary>
+    /// Перед сохранением открытой адаптером сборки или чертежа: все компоненты и модели видов найдены. Иначе SOLIDWORKS
+    /// сохранил бы ненайденные компоненты подавленными, а виды — пустыми.
+    /// </summary>
+    private static void CheckNothingMissing(SwSession s, ComObj doc, string file)
+    {
+        var type = doc.CallInt("GetType");
+        var missing = new List<string>();
+        if (type == SwConst.DocAssembly)
+        {
+            foreach (var comp in ComObj.AsObjects(doc.Call("GetComponents", false)))
+            {
+                if (comp.CallBool("IsVirtual")) continue;
+                var path = comp.CallString("GetPathName") ?? string.Empty;
+                if (path.Length == 0 || !File.Exists(path)) missing.Add(comp.CallString("Name2") ?? path);
+            }
+        }
+        else if (type == SwConst.DocDrawing && doc.Call("GetViews") is Array sheets)
+        {
+            foreach (var sheet in sheets)
+                foreach (var view in ComObj.AsObjects(sheet))
+                {
+                    var path = view.CallString("GetReferencedModelName") ?? string.Empty;
+                    if (path.Length > 0 && s.FindOpenByPath(path) == null) missing.Add(path);
+                }
+        }
+        if (missing.Count > 0)
+            throw new CadException($"В «{file}» не найдены {(type == SwConst.DocDrawing ? "модели видов" : "компоненты")}: " +
+                                   string.Join(", ", missing.Distinct(StringComparer.OrdinalIgnoreCase).Take(5)) + (missing.Count > 5 ? " …" : string.Empty) +
+                                   ". Свойства не записаны: при сохранении SOLIDWORKS испортил бы документ. Положите недостающие файлы в рабочую папку и повторите.");
+    }
+
     // ------------------------------------------------------------------ Открытие с проверкой
 
     public async Task<OpenReport> OpenAndVerifyAsync(string headPath, string workRoot, CancellationToken ct = default) =>

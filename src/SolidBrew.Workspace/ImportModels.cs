@@ -15,6 +15,11 @@ public enum ImportReferenceCategory
     Ambiguous,
     /// <summary>Файл не найден.</summary>
     Missing,
+    /// <summary>
+    /// Сохранённого пути нет, но ссылающийся документ перенесён (папку переименовали или переместили), и файл найден
+    /// на том же месте относительно него, что и до переноса — нужно подтверждение.
+    /// </summary>
+    Relocated,
 }
 
 /// <summary>Ссылка документа-исходника. Решения пользователя — <see cref="Accept"/> и <see cref="Chosen"/>.</summary>
@@ -25,23 +30,30 @@ public sealed class ImportReference
     public string SavedPath { get; init; } = string.Empty;
     public string FileName => Texts.FileNameOf(SavedPath);
     public ImportReferenceCategory Category { get; init; }
-    /// <summary>Найденный файл (Found, OutsideFolders, NameOnly).</summary>
+    /// <summary>Найденный файл (Found, OutsideFolders, NameOnly, Relocated).</summary>
     public string? TargetPath { get; init; }
+    /// <summary>Relocated: папка, где ссылающийся документ лежал при сохранении ссылки, и где он лежит сейчас.</summary>
+    public string? MovedFrom { get; init; }
+    public string? MovedTo { get; init; }
     /// <summary>Варианты для неоднозначной ссылки.</summary>
     public List<string> Candidates { get; init; } = new();
-    /// <summary>Подтверждение для OutsideFolders и NameOnly (по умолчанию — нет).</summary>
+    /// <summary>Подтверждение для OutsideFolders, NameOnly и Relocated (по умолчанию — нет).</summary>
     public bool Accept { get; set; }
     /// <summary>Выбранный вариант для Ambiguous (один из <see cref="Candidates"/>).</summary>
     public string? Chosen { get; set; }
 
     /// <summary>Требуется решение пользователя.</summary>
-    public bool RequiresDecision => Category is ImportReferenceCategory.OutsideFolders or ImportReferenceCategory.NameOnly or ImportReferenceCategory.Ambiguous;
+    public bool RequiresDecision => Category is ImportReferenceCategory.OutsideFolders or ImportReferenceCategory.NameOnly
+        or ImportReferenceCategory.Relocated or ImportReferenceCategory.Ambiguous;
+
+    /// <summary>Найденный файл можно принять одним подтверждением (без выбора из вариантов).</summary>
+    public bool IsConfirmable => Category is ImportReferenceCategory.OutsideFolders or ImportReferenceCategory.NameOnly or ImportReferenceCategory.Relocated;
 
     /// <summary>Файл, на который будет указывать ссылка при текущих решениях; null — ссылка отсутствующая.</summary>
     public string? EffectiveTarget => Category switch
     {
         ImportReferenceCategory.Found => TargetPath,
-        ImportReferenceCategory.OutsideFolders or ImportReferenceCategory.NameOnly => Accept ? TargetPath : null,
+        ImportReferenceCategory.OutsideFolders or ImportReferenceCategory.NameOnly or ImportReferenceCategory.Relocated => Accept ? TargetPath : null,
         ImportReferenceCategory.Ambiguous => Chosen != null && Candidates.Contains(Chosen, StringComparer.OrdinalIgnoreCase) ? Chosen : null,
         _ => null,
     };
@@ -52,7 +64,17 @@ public sealed class ImportReference
         ImportReferenceCategory.OutsideFolders => "за пределами указанных папок",
         ImportReferenceCategory.NameOnly => "совпадение только по имени файла",
         ImportReferenceCategory.Ambiguous => "неоднозначно: несколько файлов с таким именем",
+        ImportReferenceCategory.Relocated => "папка перенесена: найден на прежнем месте относительно документа",
         _ => "отсутствует",
+    };
+
+    /// <summary>Одна строка для подтверждения: что найдено и почему.</summary>
+    public string DecisionText => Category switch
+    {
+        ImportReferenceCategory.Relocated => $"{TargetPath} (документ перенесён из «{MovedFrom}» в «{MovedTo}»; ссылка записана как {SavedPath})",
+        ImportReferenceCategory.NameOnly => $"{TargetPath} (по сохранённому пути {SavedPath} файла нет, совпало имя)",
+        ImportReferenceCategory.OutsideFolders => $"{TargetPath} (за пределами папок поиска)",
+        _ => TargetPath ?? SavedPath,
     };
 }
 
@@ -61,8 +83,17 @@ public sealed class ImportOptions
 {
     /// <summary>Папка проекта для новых документов («Сборки/Узел»); пусто — корень проекта.</summary>
     public string? RelPathPrefix { get; init; }
-    /// <summary>Головной документ, уже учтённый в PDM, берётся из хранилища (а не ошибка).</summary>
+    /// <summary>
+    /// Постановка файла, оставленного ссылкой: головной документ, уже учтённый в PDM, берётся из хранилища (а не ошибка),
+    /// и головной кладётся ровно в <see cref="RelPathPrefix"/> (рядом с родителем), остальные — относительно него.
+    /// </summary>
     public bool AllowExistingHead { get; init; }
+    /// <summary>
+    /// Путь, под которым на головной документ ссылается родитель (где файл лежал, когда ссылку сохраняли). Если файл с тех пор
+    /// перенесли (переименовали папку), его ссылки, которых нет по сохранённому пути, ищутся на том же месте относительно
+    /// нового расположения (<see cref="ImportReferenceCategory.Relocated"/>).
+    /// </summary>
+    public string? HeadSavedPath { get; init; }
 }
 
 /// <summary>Что будет с документом при постановке на учёт.</summary>
@@ -102,6 +133,11 @@ public sealed class ImportDocument
     public bool IsHead { get; init; }
     /// <summary>Найден в папке головного файла (с подпапками) или в дополнительных папках по своим ссылкам на комплект (чертёж, спецификация).</summary>
     public bool IsExtra { get; init; }
+    /// <summary>
+    /// Где документ лежал, когда на него сохранили ссылку (путь из ссылки родителя), если это не <see cref="SourcePath"/>;
+    /// по нему ищутся ссылки документа после переноса папки.
+    /// </summary>
+    public string? SavedLocation { get; init; }
     /// <summary>
     /// Галочка «загружать»: по умолчанию — да. Снятая у модели или чертежа — файл не загружается в PDM, ссылки на него
     /// остаются путями (<see cref="ImportDisposition.ByLink"/>). У головного документа не снимается.
@@ -240,7 +276,12 @@ public sealed class ImportReport : IDisposable
         }
         foreach (var d in Documents.Where(d => !d.IsNew)) d.RelPath = string.Empty;
         CommonRoot = included.Count == 0 ? null : CommonDirectory(included.Select(d => d.SourcePath));
-        if (CommonRoot == null && included.Count > 0)
+        // Файл по ссылке: головной — ровно рядом с родителем (в RelPathPrefix), остальные — относительно головного.
+        var headDir = AllowExistingHead ? Path.GetDirectoryName(Path.GetFullPath(HeadFile)) : null;
+        var noRoot = headDir != null
+            ? included.Any(d => Path.IsPathRooted(Path.GetRelativePath(headDir, d.SourcePath)))
+            : CommonRoot == null && included.Count > 0;
+        if (noRoot)
         {
             Problems.Add(new PlanProblem(ProblemSeverity.Error, LocalProblemCodes.NoCommonRoot,
                 "Включённые файлы лежат на разных дисках — у них нет общей папки, относительные пути построить нельзя. Не подтверждайте ссылки за пределами папок или скопируйте эти файлы к проекту."));
@@ -248,10 +289,19 @@ public sealed class ImportReport : IDisposable
         foreach (var d in included)
         {
             d.RelPath = string.Empty;
-            if (CommonRoot != null)
+            string? rel = null;
+            if (headDir != null)
             {
-                var rel = Path.GetRelativePath(CommonRoot, d.SourcePath).Replace('\\', '/');
+                var fromHead = Path.GetRelativePath(headDir, d.SourcePath);
+                if (!Path.IsPathRooted(fromHead)) rel = Anchor(RelPathPrefix, fromHead);
+            }
+            else if (CommonRoot != null)
+            {
+                rel = Path.GetRelativePath(CommonRoot, d.SourcePath).Replace('\\', '/');
                 if (RelPathPrefix.Length > 0) rel = RelPathPrefix.TrimEnd('/') + "/" + rel;
+            }
+            if (rel != null)
+            {
                 if (SolidBrew.Core.Paths.RelPath.TryNormalize(rel, out var norm, out var err)) d.RelPath = norm;
                 else Problems.Add(new PlanProblem(ProblemSeverity.Error, LocalProblemCodes.InvalidPath, err, rel));
             }
@@ -280,12 +330,55 @@ public sealed class ImportReport : IDisposable
                         Problems.Add(new PlanProblem(ProblemSeverity.Error, LocalProblemCodes.Unconfirmed,
                             $"{where}: по сохранённому пути ({r.SavedPath}) файла нет, совпадение только по имени — {r.TargetPath}. Подтвердите, что это тот файл.", d.RelPath));
                         break;
+                    case ImportReferenceCategory.Relocated when !r.Accept:
+                        Problems.Add(new PlanProblem(ProblemSeverity.Error, LocalProblemCodes.Unconfirmed,
+                            $"{where}: по сохранённому пути ({r.SavedPath}) файла нет; документ перенесён из «{r.MovedFrom}» в «{r.MovedTo}», " +
+                            $"и на прежнем месте относительно него найден {r.TargetPath}. Подтвердите, что это тот файл.", d.RelPath));
+                        break;
                     case ImportReferenceCategory.Ambiguous when r.EffectiveTarget == null:
                         Problems.Add(new PlanProblem(ProblemSeverity.Error, LocalProblemCodes.AmbiguousReference,
                             $"{where}: по сохранённому пути ({r.SavedPath}) файла нет, а файлов с таким именем несколько: {string.Join("; ", r.Candidates)}. Выберите нужный.", d.RelPath));
                         break;
                 }
             }
+        }
+    }
+
+    /// <summary>
+    /// Путь в проекте для файла, лежащего по <paramref name="relativeToHead"/> от головного (головной — в <paramref name="prefix"/>):
+    /// структура папок повторяет диск; подъём выше корня проекта обрезается («../Models/X» при пустом префиксе — «Models/X»).
+    /// </summary>
+    internal static string Anchor(string prefix, string relativeToHead)
+    {
+        var parts = new List<string>(prefix.Split('/', StringSplitOptions.RemoveEmptyEntries));
+        foreach (var seg in relativeToHead.Split('\\', '/'))
+        {
+            if (seg.Length == 0 || seg == ".") continue;
+            if (seg == "..")
+            {
+                if (parts.Count > 0) parts.RemoveAt(parts.Count - 1);
+                continue;
+            }
+            parts.Add(seg);
+        }
+        return string.Join("/", parts);
+    }
+
+    /// <summary>
+    /// Подтвердить все ссылки, где найден ровно один файл (за пределами папок, только по имени, после переноса папки),
+    /// включая ссылки документов, которые попадают в постановку благодаря этим подтверждениям. Возвращает подтверждённые
+    /// ссылки (снять подтверждение — <c>Accept = false</c> и <see cref="Recompute"/>).
+    /// </summary>
+    public List<ImportReference> AcceptConfirmable()
+    {
+        var accepted = new List<ImportReference>();
+        while (true)
+        {
+            Recompute();
+            var next = References.Where(r => r.IsConfirmable && !r.Accept).ToList();
+            if (next.Count == 0) return accepted;
+            foreach (var r in next) r.Accept = true;
+            accepted.AddRange(next);
         }
     }
 

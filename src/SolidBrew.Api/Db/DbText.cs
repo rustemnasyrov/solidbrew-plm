@@ -43,7 +43,12 @@ internal static class DbText
 
     public static ProjectKind ProjectKind(string kind) => kind == "library" ? Core.Contracts.ProjectKind.Library : Core.Contracts.ProjectKind.Project;
 
-    public static DocumentStatus Status(string status) => status == "unused" ? DocumentStatus.Unused : DocumentStatus.Active;
+    public static DocumentStatus Status(string status) => status switch
+    {
+        "unused" => DocumentStatus.Unused,
+        "deleted" => DocumentStatus.Deleted,
+        _ => DocumentStatus.Active,
+    };
 
     public static DateTimeOffset Time(DateTime value) =>
         new(DateTime.SpecifyKind(value, DateTimeKind.Utc));

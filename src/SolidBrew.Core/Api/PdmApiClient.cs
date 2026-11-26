@@ -103,6 +103,9 @@ namespace SolidBrew.Core.Api
         public Task<DocumentSummaryDto> MarkUnusedAsync(Guid id, bool unused, CancellationToken ct = default) =>
             SendJsonAsync<DocumentSummaryDto>(HttpMethod.Post, ApiRoutes.DocumentUnused(id), new MarkUnusedRequest { Unused = unused }, ct);
 
+        public Task DeleteDocumentAsync(Guid id, CancellationToken ct = default) =>
+            SendNoResultAsync(HttpMethod.Delete, ApiRoutes.Document(id), null, ct);
+
         // --- Архив содержимого ---
 
         public async Task<List<VersionByHashDto>> FindVersionsByHashAsync(IEnumerable<string> hashes, CancellationToken ct = default)

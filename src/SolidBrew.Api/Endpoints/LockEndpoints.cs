@@ -34,6 +34,8 @@ internal static class LockEndpoints
             SELECT d.id, d.current_rel_path, d.status, p.kind, p.name FROM documents d JOIN projects p ON p.id = d.project_id WHERE d.id = @id
             """, new { id });
         if (doc.Id == Guid.Empty) return ApiErrors.DocumentNotFound(id);
+        if (doc.Status == "deleted")
+            return ApiErrors.Unprocessable(ProblemCodes.Validation, $"Документ «{doc.RelPath}» удалён из PDM — взять его в работу нельзя.", id, doc.RelPath);
         if (doc.Status == "unused")
             return ApiErrors.Unprocessable(ProblemCodes.Validation,
                 $"Документ «{doc.RelPath}» помечен «не используется» — взять его в работу нельзя. Сначала снимите пометку.", id, doc.RelPath);

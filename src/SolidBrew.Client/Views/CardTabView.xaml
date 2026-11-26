@@ -1,7 +1,7 @@
 <UserControl x:Class="SolidBrew.Client.Views.CardTabView"
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
-    <!-- «Карточка»: сведения о файле и свойства CAD по конфигурациям (только чтение). -->
+    <!-- «Карточка»: сведения о файле и свойства CAD по конфигурациям. Пустые свойства можно заполнить — PDM запишет их в файл. -->
     <DockPanel>
         <StackPanel DockPanel.Dock="Top">
             <TextBlock Text="Загрузка…" Style="{StaticResource Muted}" Visibility="{Binding IsLoading, Converter={StaticResource BoolVis}}" />
@@ -14,7 +14,9 @@
                                 <ColumnDefinition Width="*" />
                             </Grid.ColumnDefinitions>
                             <TextBlock Text="{Binding Label}" Foreground="{StaticResource MutedBrush}" Margin="0,0,16,0" />
-                            <TextBlock Grid.Column="1" Text="{Binding Value}" TextWrapping="Wrap" />
+                            <!-- Значение можно выделить и скопировать, но не изменить -->
+                            <TextBox Grid.Column="1" Text="{Binding Value, Mode=OneWay}" IsReadOnly="True" IsReadOnlyCaretVisible="False"
+                                     BorderThickness="0" Background="Transparent" Padding="0" Margin="-2,0,0,0" TextWrapping="Wrap" Cursor="IBeam" />
                         </Grid>
                     </DataTemplate>
                 </ItemsControl.ItemTemplate>
@@ -22,10 +24,46 @@
             <TextBlock Text="Свойства CAD" Style="{StaticResource SubHeader}" Visibility="{Binding HasAnyProperties, Converter={StaticResource BoolVis}}" />
             <TextBlock Text="{Binding Message}" Style="{StaticResource Muted}" Margin="0,4" Visibility="{Binding Message, Converter={StaticResource NullVis}}" />
         </StackPanel>
-        <CheckBox DockPanel.Dock="Bottom" Content="{Binding ShowEmptyText}" IsChecked="{Binding ShowEmpty}" Margin="0,8,0,0"
-                  Foreground="{StaticResource MutedBrush}" Visibility="{Binding HasEmpty, Converter={StaticResource BoolVis}}"
-                  ToolTip="Свойства без значения ни в одной конфигурации (поля штампа из шаблона и т. п.)" />
-        <DataGrid x:Name="PropertiesGrid" ItemsSource="{Binding Properties}" Visibility="{Binding HasProperties, Converter={StaticResource BoolVis}}"
-                  ToolTip="Свойства читаются из файла CAD; изменить их можно только в CAD (взять в работу, изменить, сдать)." />
+
+        <!-- Запись заполненного в файл CAD -->
+        <Border DockPanel.Dock="Bottom" Margin="0,8,0,0" Padding="10,8" Background="#FFF8E1" BorderBrush="#F0D58A" BorderThickness="1" CornerRadius="3"
+                Visibility="{Binding HasPending, Converter={StaticResource BoolVis}}">
+            <DockPanel>
+                <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+                    <Button Style="{StaticResource PlainButton}" Tag="&#xE74E;" Content="{Binding SaveText}" Command="{Binding SaveCommand}"
+                            ToolTip="Только этот документ: взять в работу, записать значения в файл CAD, сохранить и сдать новой версией" />
+                    <Button Style="{StaticResource PlainButton}" Content="Отменить" Command="{Binding RevertCommand}" Margin="8,0,0,0"
+                            ToolTip="Убрать значения, заполненные в этом документе" />
+                </StackPanel>
+                <TextBlock VerticalAlignment="Center" TextWrapping="Wrap" Margin="0,0,12,0" Text="{Binding PendingText}" />
+            </DockPanel>
+        </Border>
+        <DockPanel DockPanel.Dock="Bottom" Margin="0,8,0,0">
+            <CheckBox DockPanel.Dock="Left" Content="{Binding ShowEmptyText}" IsChecked="{Binding ShowEmpty}"
+                      Foreground="{StaticResource MutedBrush}" Visibility="{Binding HasEmpty, Converter={StaticResource BoolVis}}"
+                      ToolTip="Свойства без значения ни в одной конфигурации (поля штампа из шаблона и т. п.)" />
+            <CheckBox DockPanel.Dock="Left" Content="По конфигурациям" IsChecked="{Binding ByConfiguration}" Margin="16,0,0,0"
+                      Foreground="{StaticResource MutedBrush}" Visibility="{Binding HasConfigurations, Converter={StaticResource BoolVis}}"
+                      ToolTip="Показать отдельно общие свойства файла и свойства каждой конфигурации (служебные конфигурации развёртки не показываются)" />
+            <TextBlock Text="Пустые ячейки можно заполнить." Style="{StaticResource Muted}" Margin="16,0,0,0" VerticalAlignment="Center"
+                       Visibility="{Binding CanEdit, Converter={StaticResource BoolVis}}" />
+            <TextBlock Text="{Binding EditHint}" Style="{StaticResource Muted}" Margin="16,0,0,0" VerticalAlignment="Center" TextWrapping="Wrap"
+                       Visibility="{Binding EditHint, Converter={StaticResource NullVis}}" />
+        </DockPanel>
+        <Grid>
+            <!-- «По конфигурациям»: одна широкая таблица -->
+            <DataGrid x:Name="PropertiesGrid" ItemsSource="{Binding Properties}" Visibility="{Binding IsOneTable, Converter={StaticResource BoolVis}}" />
+            <!-- Одно значение: две половины рядом, чтобы реже прокручивать -->
+            <Grid Visibility="{Binding IsTwoColumn, Converter={StaticResource BoolVis}}">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="16" />
+                    <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+                <DataGrid x:Name="LeftGrid" ItemsSource="{Binding LeftProperties}" VerticalAlignment="Top" />
+                <DataGrid x:Name="RightGrid" Grid.Column="2" ItemsSource="{Binding RightProperties}" VerticalAlignment="Top"
+                          Visibility="{Binding RightProperties.Count, Converter={StaticResource CountVis}}" />
+            </Grid>
+        </Grid>
     </DockPanel>
 </UserControl>

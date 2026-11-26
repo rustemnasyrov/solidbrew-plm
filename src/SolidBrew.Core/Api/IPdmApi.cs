@@ -83,6 +83,12 @@ namespace SolidBrew.Core.Api
         /// <summary>POST /api/documents/{id}/unused — пометить «не используется» или вернуть. Возвращает обновлённый документ.</summary>
         Task<DocumentSummaryDto> MarkUnusedAsync(Guid id, bool unused, CancellationToken ct = default);
 
+        /// <summary>
+        /// DELETE /api/documents/{id} — удалить документ (только администратор). Нельзя, если на него ссылаются опубликованные
+        /// версии других документов (409 <c>referencedByPublished</c>) или он взят другим. История версий сохраняется.
+        /// </summary>
+        Task DeleteDocumentAsync(Guid id, CancellationToken ct = default);
+
         // --- Архив содержимого ---
 
         /// <summary>POST /api/objects/missing — какие из хешей сервер ещё не хранит.</summary>

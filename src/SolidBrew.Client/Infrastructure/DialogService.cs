@@ -28,9 +28,10 @@ public sealed class DialogService : IDialogService
     public int Choose(string title, string message, IReadOnlyList<string> options, IEnumerable<string>? details = null) =>
         MessageWindow.Show(Owner(), title, message, details, MessageKind.Warning, options);
 
-    public string? PickFile(string title, string filter, string? initialFolder = null)
+    public string? PickFile(string title, string filter, string? initialFolder = null, string? fileName = null)
     {
         var dlg = new OpenFileDialog { Title = title, Filter = filter, CheckFileExists = true };
+        if (!string.IsNullOrEmpty(fileName)) dlg.FileName = fileName;
         if (initialFolder != null && Directory.Exists(initialFolder)) dlg.InitialDirectory = initialFolder;
         return dlg.ShowDialog(Owner()) == true ? dlg.FileName : null;
     }

@@ -23,6 +23,7 @@ namespace SolidBrew.Core.Contracts
         public const string Unlock = "unlock";
         public const string ForceUnlock = "forceUnlock";
         public const string MarkUnused = "markUnused";
+        public const string Deleted = "deleted";
         public const string Export = "export";
         public const string UserCreated = "userCreated";
         public const string UserUpdated = "userUpdated";

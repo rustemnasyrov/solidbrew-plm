@@ -176,6 +176,10 @@ internal static class ImportBench
         public IReadOnlyCollection<string> Extensions => inner.Extensions;
         public bool IsDocument(string path) => inner.IsDocument(path);
         public DocumentKind KindOf(string path) => inner.KindOf(path);
+        public Task WritePropertiesAsync(string documentPath, IReadOnlyList<CadPropertyChange> changes, CancellationToken ct = default) =>
+            inner.WritePropertiesAsync(documentPath, changes, ct);
+        public Task RemoveReferencesAsync(string documentPath, IReadOnlyList<string> savedPaths, CancellationToken ct = default) =>
+            inner.RemoveReferencesAsync(documentPath, savedPaths, ct);
 
         public async Task<CadDocumentInfo> ReadAsync(string path, CancellationToken ct = default)
         {

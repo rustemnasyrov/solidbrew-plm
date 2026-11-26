@@ -215,7 +215,7 @@ public sealed class FakeDialogs : IDialogService
         return ChooseAnswers.Count > 0 ? ChooseAnswers.Dequeue() : -1;
     }
 
-    public string? PickFile(string title, string filter, string? initialFolder = null) => FileToPick;
+    public string? PickFile(string title, string filter, string? initialFolder = null, string? fileName = null) => FileToPick;
 
     public string? PickFolder(string title, string? initialFolder = null) => FolderToPick;
 

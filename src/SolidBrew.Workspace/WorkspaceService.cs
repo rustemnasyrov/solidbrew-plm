@@ -119,6 +119,14 @@ public sealed partial class WorkspaceService
     /// </summary>
     internal async Task<CadDocumentInfo> ReadCadAsync(ICadAdapter adapter, string fullPath, string? sha256, CancellationToken ct)
     {
+        var info = await ReadCadRawAsync(adapter, fullPath, sha256, ct).ConfigureAwait(false);
+        // Ссылки, убранные через PDM («Удалить ссылку»), не учитываются, даже если CAD оставил их в файле разорванными.
+        DocumentProperties.ApplyRemovedReferences(info);
+        return info;
+    }
+
+    private async Task<CadDocumentInfo> ReadCadRawAsync(ICadAdapter adapter, string fullPath, string? sha256, CancellationToken ct)
+    {
         var kind = adapter.KindOf(fullPath);
         if (string.IsNullOrEmpty(sha256) || !(CadReadCache.IsCacheable(kind) || kind == DocumentKind.Drawing))
             return await adapter.ReadAsync(fullPath, ct).ConfigureAwait(false);
@@ -141,10 +149,10 @@ public sealed partial class WorkspaceService
         }
 
         var before = FileOps.StampOf(fullPath);
-        var info = await adapter.ReadAsync(fullPath, ct).ConfigureAwait(false);
+        var read = await adapter.ReadAsync(fullPath, ct).ConfigureAwait(false);
         if (before != null && before.SameAs(FileOps.StampOf(fullPath)))
-            ReadCache.Put(adapter.CadId, key, info);
-        return info;
+            ReadCache.Put(adapter.CadId, key, read);
+        return read;
     }
 
     /// <summary>

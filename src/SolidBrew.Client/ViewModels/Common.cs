@@ -242,10 +242,16 @@ public enum StatusDot
     MineModified,
     /// <summary>Жёлтый: сборку или чертёж надо взять и пересохранить — изменилась или устарела входящая модель.</summary>
     NeedsResave,
-    /// <summary>Фиолетовый: взят другим.</summary>
+    /// <summary>Оранжевый: взят другим.</summary>
     Other,
     /// <summary>Серый: файла нет в рабочей папке.</summary>
     Missing,
+    /// <summary>Розовый: устарел — в хранилище есть более новая версия.</summary>
+    Outdated,
+    /// <summary>Фиолетовый: проблема (нет файла, правка без взятия, ссылки нет и т. п.).</summary>
+    Problem,
+    /// <summary>Бирюзовый: не учтён в PDM — новый файл или файл по ссылке.</summary>
+    NotInPdm,
 }
 
 public static class ViewModelExtensions

@@ -17,6 +17,27 @@ namespace SolidBrew.Core.Cad
         public List<CadReference> References { get; set; } = new List<CadReference>();
     }
 
+    /// <summary>Значение свойства для записи в файл CAD.</summary>
+    public sealed class CadPropertyChange
+    {
+        public CadPropertyChange() { }
+
+        public CadPropertyChange(string configuration, string name, string value)
+        {
+            Configuration = configuration ?? string.Empty;
+            Name = name;
+            Value = value;
+        }
+
+        /// <summary>Конфигурация; «» — свойство уровня файла (у чертежа — только оно).</summary>
+        public string Configuration { get; set; } = string.Empty;
+        public string Name { get; set; } = string.Empty;
+        /// <summary>Значение — текст (в SOLIDWORKS свойство записывается с типом «Текст»).</summary>
+        public string Value { get; set; } = string.Empty;
+
+        public override string ToString() => (Configuration.Length > 0 ? Configuration + ": " : string.Empty) + Name + " = " + Value;
+    }
+
     /// <summary>Ссылка из файла CAD на другой файл.</summary>
     public sealed class CadReference
     {

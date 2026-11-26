@@ -277,6 +277,7 @@ public sealed partial class WorkspaceService
                 var map = p.RefPaths.Distinct(StringComparer.OrdinalIgnoreCase).ToDictionary(r => r, _ => newFull, StringComparer.OrdinalIgnoreCase);
                 await adapter.ReplaceReferencesAsync(copy, map, ct).ConfigureAwait(false);
                 var info = await adapter.ReadAsync(copy, ct).ConfigureAwait(false);
+                DocumentProperties.ApplyRemovedReferences(info);
                 var sha = await FileOps.HashAsync(copy, ct).ConfigureAwait(false);
                 var size = new FileInfo(copy).Length;
                 stagedParents[p.DocumentId] = (copy, sha, size);
@@ -451,6 +452,55 @@ public sealed partial class WorkspaceService
     /// <summary>Пометить документ «не используется» (или вернуть).</summary>
     public Task<DocumentSummaryDto> MarkUnusedAsync(Guid documentId, bool unused, CancellationToken ct = default) =>
         Api.MarkUnusedAsync(documentId, unused, ct);
+
+    /// <summary>
+    /// Удалить документ из PDM (только администратор; сервер отказывает, если на документ ссылаются опубликованные версии
+    /// других документов). Затем убрать его из рабочей папки <paramref name="workRoot"/>: файл без правок удаляется,
+    /// файл с несданными правками остаётся черновиком (ничего не теряется).
+    /// </summary>
+    public async Task<OperationResult> DeleteDocumentAsync(string? workRoot, Guid documentId, CancellationToken ct = default)
+    {
+        var result = new OperationResult();
+        var detail = await Api.GetDocumentAsync(documentId, ct).ConfigureAwait(false);
+        var label = Texts.Doc(detail.Document.RelPath, detail.Document.Designation);
+        try
+        {
+            await Api.DeleteDocumentAsync(documentId, ct).ConfigureAwait(false);
+        }
+        catch (PdmApiException ex) when (!ex.IsNetworkError)
+        {
+            result.Problems.AddRange(PlanProblem.FromServer(ex));
+            result.Message = ex.Message;
+            return result;
+        }
+
+        result.Success = true;
+        result.Message = $"Документ {label} удалён из PDM. История версий сохранена в журнале.";
+        if (workRoot == null || !IsWorkspace(workRoot)) return result;
+        var root = Root(workRoot);
+        var state = WorkspaceState.Load(root);
+        var entry = state.FindByDocument(documentId);
+        if (entry == null) return result;
+        var full = RelPath.Combine(root, entry.RelPath);
+        if (File.Exists(full))
+        {
+            var changed = await FileOps.HashAsync(full, ct).ConfigureAwait(false) != entry.LocalSha;
+            if (changed)
+            {
+                FileOps.SetReadOnly(full, false);
+                result.Problems.Add(new PlanProblem(ProblemSeverity.Info, LocalProblemCodes.LocalChanges,
+                    $"В файле {label} были несданные правки — он оставлен в рабочей папке как черновик: {entry.RelPath}.", entry.RelPath, documentId));
+            }
+            else
+            {
+                FileOps.SetReadOnly(full, false);
+                FileOps.TryDelete(full);
+            }
+        }
+        state.Entries.Remove(entry);
+        state.Save(root);
+        return result;
+    }
 
     /// <summary>Выгрузить комплект версии в ZIP-файл (запись через временный файл).</summary>
     public async Task ExportAsync(Guid documentId, int version, bool includeDerived, string destinationFile,

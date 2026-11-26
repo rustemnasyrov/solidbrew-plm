@@ -13,9 +13,10 @@ namespace SolidBrew.Client.ViewModels;
 /// </summary>
 /// <summary>
 /// Постановка файла, оставленного ссылкой: головной файл задан, новые документы кладутся в папку проекта
-/// <see cref="RelPathPrefix"/>, уже учтённое содержимое берётся из хранилища.
+/// <see cref="RelPathPrefix"/>, уже учтённое содержимое берётся из хранилища. <see cref="HeadSavedPath"/> — путь из ссылки
+/// родителя (где файл лежал раньше): если папку переименовали, ссылки файла ищутся на прежнем месте относительно него.
 /// </summary>
-public sealed record ImportPreset(string HeadFile, string RelPathPrefix, string ParentLabel);
+public sealed record ImportPreset(string HeadFile, string RelPathPrefix, string ParentLabel, string? HeadSavedPath = null);
 
 public sealed partial class ImportViewModel : DialogViewModel
 {
@@ -78,6 +79,7 @@ public sealed partial class ImportViewModel : DialogViewModel
     public ObservableCollection<ImportReferenceRow> Found { get; } = new();
     public ObservableCollection<ImportReferenceRow> Outside { get; } = new();
     public ObservableCollection<ImportReferenceRow> NameOnly { get; } = new();
+    public ObservableCollection<ImportReferenceRow> Relocated { get; } = new();
     public ObservableCollection<ImportReferenceRow> Ambiguous { get; } = new();
     public ObservableCollection<ImportReferenceRow> Missing { get; } = new();
     public ObservableCollection<ProblemItem> Problems { get; } = new();
@@ -85,6 +87,7 @@ public sealed partial class ImportViewModel : DialogViewModel
     public string FoundHeader => $"Найдены ({Found.Count})";
     public string OutsideHeader => $"За пределами папок ({Outside.Count})";
     public string NameOnlyHeader => $"Совпали только по имени ({NameOnly.Count})";
+    public string RelocatedHeader => $"Папка перенесена ({Relocated.Count})";
     public string AmbiguousHeader => $"Неоднозначно ({Ambiguous.Count})";
     public string MissingHeader => $"Отсутствуют ({Missing.Count})";
     public string DocumentsHeader => Report == null ? "Документы" :
@@ -138,7 +141,12 @@ public sealed partial class ImportViewModel : DialogViewModel
     {
         var head = HeadFile.Trim();
         var folders = ExtraFolders.ToList();
-        var options = _preset == null ? null : new ImportOptions { RelPathPrefix = _preset.RelPathPrefix, AllowExistingHead = true };
+        var options = _preset == null ? null : new ImportOptions
+        {
+            RelPathPrefix = _preset.RelPathPrefix, AllowExistingHead = true,
+            // Выбран другой файл, чем по ссылке («Выбрать файл и сдать…»), — его прежнего места мы не знаем.
+            HeadSavedPath = string.Equals(head, _preset.HeadFile, StringComparison.OrdinalIgnoreCase) ? _preset.HeadSavedPath : null,
+        };
         var outcome = await Busy.RunAsync("Чтение исходников", (p, ct) => Workspace.PrepareImportAsync(head, folders, p, ct, options));
         if (!outcome.Ok) return;
         Report?.Dispose();
@@ -173,6 +181,7 @@ public sealed partial class ImportViewModel : DialogViewModel
         Found.ReplaceWith(refs.Where(r => r.Category == ImportReferenceCategory.Found).Select(Row));
         Outside.ReplaceWith(refs.Where(r => r.Category == ImportReferenceCategory.OutsideFolders).Select(Row));
         NameOnly.ReplaceWith(refs.Where(r => r.Category == ImportReferenceCategory.NameOnly).Select(Row));
+        Relocated.ReplaceWith(refs.Where(r => r.Category == ImportReferenceCategory.Relocated).Select(Row));
         Ambiguous.ReplaceWith(refs.Where(r => r.Category == ImportReferenceCategory.Ambiguous).Select(Row));
         Missing.ReplaceWith(refs.Where(r => r.Category == ImportReferenceCategory.Missing).Select(Row));
 
@@ -190,9 +199,10 @@ public sealed partial class ImportViewModel : DialogViewModel
 
         Summary = $"Загрузить в PDM: {report.NewDocuments.Count()}, взять из хранилища: {report.FromStorageDocuments.Count()}, оставить ссылкой: {report.ByLinkDocuments.Count()}. " +
                   $"Ссылки: найдены {Found.Count}, за пределами папок {Outside.Count}, только по имени {NameOnly.Count}, " +
+                  (Relocated.Count > 0 ? $"папка перенесена {Relocated.Count}, " : string.Empty) +
                   $"неоднозначно {Ambiguous.Count}, отсутствуют {Missing.Count}." +
                   (report.CommonRoot != null ? $" Общая папка: {report.CommonRoot}." : string.Empty);
-        foreach (var name in new[] { nameof(FoundHeader), nameof(OutsideHeader), nameof(NameOnlyHeader), nameof(AmbiguousHeader), nameof(MissingHeader), nameof(DocumentsHeader) })
+        foreach (var name in new[] { nameof(FoundHeader), nameof(OutsideHeader), nameof(NameOnlyHeader), nameof(RelocatedHeader), nameof(AmbiguousHeader), nameof(MissingHeader), nameof(DocumentsHeader) })
             OnPropertyChanged(name);
         ImportCommand.NotifyCanExecuteChanged();
     }
@@ -275,6 +285,8 @@ public sealed partial class ImportReferenceRow : ObservableObject
     public string SavedPath => Reference.SavedPath;
     public string? TargetPath => Reference.TargetPath;
     public string CategoryText => Reference.CategoryText;
+    /// <summary>Папка перенесена: «было → стало» для ссылающегося документа.</summary>
+    public string? MovedText => Reference.MovedFrom == null ? null : $"{Reference.MovedFrom} → {Reference.MovedTo}";
     public IReadOnlyList<string> Candidates => Reference.Candidates;
 
     /// <summary>Подтверждение (за пределами папок, только по имени).</summary>

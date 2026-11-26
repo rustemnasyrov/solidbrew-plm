@@ -135,6 +135,8 @@ public class CadAdapterRegistryTests
         public Task<CadDocumentInfo> ReadAsync(string path, CancellationToken ct = default) => Task.FromResult(new CadDocumentInfo());
         public Task<List<CadReference>> ReadReferencesAsync(string path, CancellationToken ct = default) => Task.FromResult(new List<CadReference>());
         public Task ReplaceReferencesAsync(string documentPath, IReadOnlyDictionary<string, string> oldToNew, CancellationToken ct = default) => Task.CompletedTask;
+        public Task WritePropertiesAsync(string documentPath, IReadOnlyList<CadPropertyChange> changes, CancellationToken ct = default) => Task.CompletedTask;
+        public Task RemoveReferencesAsync(string documentPath, IReadOnlyList<string> savedPaths, CancellationToken ct = default) => Task.CompletedTask;
         public Task<OpenReport> OpenAndVerifyAsync(string headPath, string workRoot, CancellationToken ct = default) => Task.FromResult(new OpenReport());
     }
 

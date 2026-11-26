@@ -266,6 +266,45 @@ public class ImportTests : IDisposable
     }
 
     [Fact]
+    public async Task TwoLinkedFiles_BoundTogether_OneNewParentVersion()
+    {
+        var src = _env.CreateSourceProject();
+        var c = _env.For("ivanov");
+        var shaftSource = System.IO.Path.Combine(src, @"Детали\Вал.tcprt");
+        var boltSource = System.IO.Path.Combine(src, @"Детали\Болт.tcprt");
+        using (var report = await c.Service.PrepareImportAsync(System.IO.Path.Combine(src, "Изделие.tcasm")))
+        {
+            report.Documents.Single(d => d.FileName == "Вал.tcprt").Include = false;
+            report.Documents.Single(d => d.FileName == "Болт.tcprt").Include = false;
+            report.Recompute();
+            var r = await c.Service.ExecuteImportAsync(report, _env.Project.Id, null);
+            Assert.True(r.Success, r.Message);
+            await c.OpenAsync(r.HeadDocumentId);
+        }
+        var nodeId = _env.DocId("Сборки/Узел.tcasm");
+        var bindings = new List<ReferenceBinding>();
+        foreach (var file in new[] { shaftSource, boltSource })
+        {
+            using var reg = await c.Service.PrepareImportAsync(file, null, null, default, new ImportOptions { RelPathPrefix = "Сборки", AllowExistingHead = true });
+            var imported = await c.Service.ExecuteImportAsync(reg, _env.Project.Id, null);
+            Assert.True(imported.Success, imported.Message);
+            bindings.Add(new ReferenceBinding(file, imported.HeadDocumentId, imported.HeadVersion));
+        }
+
+        var bind = await c.Service.BindReferencesAsync(c.WorkRoot, nodeId, bindings);
+        Assert.True(bind.Success, bind.Message);
+        Assert.Equal(2, bind.ParentVersion); // обе привязки — одной версией
+        Assert.Null(_env.Server.Doc(nodeId).Lock); // блокировку брала операция — снята
+
+        var plan = await c.Service.PrepareUpdateToLatestAsync(c.WorkRoot, new[] { nodeId });
+        var placed = await c.Service.ExecuteOpenAsync(plan, verifyInCad: true);
+        Assert.True(placed.Success, placed.Message);
+        var loaded = placed.CadReport!.Configurations.SelectMany(x => x.Components).Select(x => x.LoadedPath).ToList();
+        Assert.Contains(c.File("Сборки/Вал.tcprt"), loaded);
+        Assert.Contains(c.File("Сборки/Болт.tcprt"), loaded);
+    }
+
+    [Fact]
     public async Task LinkedFile_Bind_ParentLockedAndEdited_KeepsEditsAndLock()
     {
         var src = _env.CreateSourceProject();

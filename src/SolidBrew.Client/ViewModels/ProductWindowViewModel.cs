@@ -47,6 +47,7 @@ public sealed partial class ProductWindowViewModel : ObservableObject, INodeHost
             await PendingRefresh;
         };
         Flow.Notices += (_, items) => AddNotices(items);
+        PendingProperties.Changed += OnPendingPropertiesChanged;
         Tree = new ProductTreeViewModel();
         Tree.PropertyChanged += OnTreeChanged;
         Tree.ProductRequested += async p =>
@@ -101,7 +102,7 @@ public sealed partial class ProductWindowViewModel : ObservableObject, INodeHost
 
     /// <summary>Сколько документов сдавать: изменённые взятые и черновики.</summary>
     [ObservableProperty]
-    [NotifyPropertyChangedFor(nameof(CheckinText), nameof(HasCheckin))]
+    [NotifyPropertyChangedFor(nameof(CheckinText), nameof(HasCheckin), nameof(CheckinTotal))]
     [NotifyCanExecuteChangedFor(nameof(CheckinAllCommand))]
     private int _checkinCount;
 
@@ -122,8 +123,24 @@ public sealed partial class ProductWindowViewModel : ObservableObject, INodeHost
     public string ProductSubtitle => Product == null || string.IsNullOrWhiteSpace(Product.Designation) ? string.Empty : Product.Name ?? string.Empty;
     public string WindowTitle => Product == null ? "SolidBrew PDM" : $"{ProductTitle} {ProductSubtitle} — SolidBrew PDM".Replace("  ", " ");
     public string WorkRootText => Flow.WorkRoot ?? string.Empty;
-    public string CheckinText => CheckinCount > 0 ? $"Сдать ({CheckinCount})" : "Сдать";
-    public bool HasCheckin => CheckinCount > 0;
+    /// <summary>Заполненные в карточках и ещё не записанные значения свойств — записываются по «Сдать».</summary>
+    public PendingPropertyEdits PendingProperties { get; } = new();
+
+    /// <summary>Сколько сдавать: изменённые и новые документы плюс документы с заполненными свойствами.</summary>
+    public int CheckinTotal => CheckinCount + PendingProperties.Documents.Count(id => !_modifiedIds.Contains(id));
+    public string CheckinText => CheckinTotal > 0 ? $"Сдать ({CheckinTotal})" : "Сдать";
+    public bool HasCheckin => CheckinTotal > 0;
+
+    /// <summary>Изменённые документы (чтобы документ с правками и заполненными свойствами не считался дважды).</summary>
+    private HashSet<Guid> _modifiedIds = new();
+
+    private void OnPendingPropertiesChanged(object? sender, EventArgs e)
+    {
+        OnPropertyChanged(nameof(CheckinTotal));
+        OnPropertyChanged(nameof(CheckinText));
+        OnPropertyChanged(nameof(HasCheckin));
+        CheckinAllCommand.NotifyCanExecuteChanged();
+    }
     public bool IsPinned => Product != null && Session.Profile.IsPinned(Product.DocumentId);
     public string PinText => IsPinned ? "Открепить изделие" : "Закрепить изделие в списке изделий";
     public string PinGlyph => IsPinned ? "" : "";
@@ -174,6 +191,16 @@ public sealed partial class ProductWindowViewModel : ObservableObject, INodeHost
     public async Task<bool> OpenProductAsync(ProductRef? product)
     {
         if (product == null) return false;
+        if (PendingProperties.Count > 0 && product.DocumentId != Product?.DocumentId)
+        {
+            if (!Dialogs.Confirm("Незаписанные свойства",
+                    $"В карточках заполнены свойства ({PendingProperties.Count} док.), они ещё не записаны в файлы. Перейти к другому изделию без записи?",
+                    "Перейти без записи", "Остаться", PendingProperties.Describe()))
+                return false;
+            PendingProperties.Clear();
+        }
+        // Просмотр мог показывать головную сборку этого изделия из его папки — открытие будет её обновлять.
+        ReleasePreviewRequested?.Invoke(this, EventArgs.Empty);
         _opening = true;
         try
         {
@@ -253,7 +280,10 @@ public sealed partial class ProductWindowViewModel : ObservableObject, INodeHost
         }
         var (tree, status) = outcome.Value;
         Tree.Load(tree, status);
+        _modifiedIds = status.Files.Where(f => f.Local == LocalFileState.ModifiedLocally && f.Lock == LockState.LockedByMe && f.DocumentId != null)
+            .Select(f => f.DocumentId!.Value).ToHashSet();
         CheckinCount = status.Files.Count(f => f.Local == LocalFileState.Draft || (f.Local == LocalFileState.ModifiedLocally && f.Lock == LockState.LockedByMe));
+        OnPendingPropertiesChanged(this, EventArgs.Empty);
         var r = Tree.Root;
         ProductVersionText = r?.ShownVersion is { } v ? $"v{v}" + (r.LatestVersion is { } l && l > v ? $", есть v{l}" : string.Empty) : string.Empty;
         if (status.Messages.Count > 0) AddNotices(status.Messages);
@@ -278,6 +308,12 @@ public sealed partial class ProductWindowViewModel : ObservableObject, INodeHost
 
     private void OnTreeChanged(object? sender, PropertyChangedEventArgs e)
     {
+        if (e.PropertyName == nameof(ProductTreeViewModel.SelectedNodes))
+        {
+            // Несколько узлов (Ctrl/Shift): меню дерева — действия, применимые к выделенным, с их числом.
+            if (Tree.HasMultiSelection) Panel.ShowSelectionMenu(Tree.SelectedNodes, Session.CanModify, n => ReferenceEquals(n, Tree.Root));
+            return;
+        }
         if (e.PropertyName != nameof(ProductTreeViewModel.SelectedNode)) return;
         var node = Tree.SelectedNode;
         Panel.Show(node, Session.CanModify, node != null && ReferenceEquals(node, Tree.Root));
@@ -377,11 +413,35 @@ public sealed partial class ProductWindowViewModel : ObservableObject, INodeHost
 
     // ------------------------------------------------------------------ команды верхней полосы и меню
 
-    private bool CanCheckinAll() => Session.CanModify && CheckinCount > 0 && !Busy.IsBusy;
+    private bool CanCheckinAll() => Session.CanModify && CheckinTotal > 0 && !Busy.IsBusy;
 
     /// <summary>«Сдать (N)» — окно сдачи рабочей папки.</summary>
     [RelayCommand(CanExecute = nameof(CanCheckinAll))]
-    private Task CheckinAllAsync() => Flow.CheckinAsync();
+    private async Task CheckinAllAsync()
+    {
+        // Сначала — свойства, заполненные в карточках: одной операцией взять, записать в файлы и сдать.
+        if (PendingProperties.Count > 0)
+        {
+            if (!await WritePendingPropertiesAsync()) return;
+            if (CheckinCount == 0) return; // других правок нет
+        }
+        await Flow.CheckinAsync();
+    }
+
+    /// <summary>Записать все заполненные в карточках свойства и сдать документы (с подтверждением перечня).</summary>
+    public async Task<bool> WritePendingPropertiesAsync()
+    {
+        var writes = PendingProperties.ToWrites();
+        if (writes.Count == 0) return true;
+        ReleasePreviewRequested?.Invoke(this, EventArgs.Empty);
+        var ok = await Flow.WritePropertiesAsync(writes, PendingProperties.Describe());
+        if (PendingRefresh is { } refresh) await refresh;
+        if (!ok) return false;
+        PendingProperties.Remove(writes.Select(w => w.DocumentId));
+        if (Tree.SelectedNode is { } node && node.DocumentId is { } id && writes.Any(w => w.DocumentId == id))
+            Panel.Show(node, Session.CanModify, ReferenceEquals(node, Tree.Root));
+        return true;
+    }
 
     private bool HasProductAndIdle() => Product != null && !Busy.IsBusy;
 
@@ -406,7 +466,27 @@ public sealed partial class ProductWindowViewModel : ObservableObject, INodeHost
         var start = Flow.WorkRoot != null && Directory.Exists(Flow.WorkRoot) ? Path.GetDirectoryName(Flow.WorkRoot) : null;
         var file = Dialogs.PickFile("Добавить проект: выберите сборку SOLIDWORKS", filter, start);
         if (file == null) return;
-        var created = Flow.Import(ProductDocument?.ProjectKind == ProjectKind.Project ? ProductDocument.ProjectId : null, file);
+        await AddProjectsAsync(new[] { file });
+    }
+
+    /// <summary>Файлы, которые можно добавить проектом (перетаскиванием): документы CAD, известные адаптерам.</summary>
+    public IReadOnlyList<string> DroppableProjectFiles(IEnumerable<string> paths)
+    {
+        if (!CanImport()) return Array.Empty<string>();
+        var exts = new HashSet<string>(Session.Workspace.Adapters.All.SelectMany(a => a.Extensions), StringComparer.OrdinalIgnoreCase);
+        return paths.Where(p => System.IO.File.Exists(p) && exts.Contains(Path.GetExtension(p))).ToList();
+    }
+
+    /// <summary>
+    /// Перетащили файлы CAD на дерево — каждый ставится на учёт как «Добавить проект…» с уже выбранным файлом;
+    /// после последнего открывается созданное изделие.
+    /// </summary>
+    public async Task AddProjectsAsync(IReadOnlyList<string> files)
+    {
+        if (files.Count == 0 || !CanImport()) return;
+        ProductRef? created = null;
+        foreach (var file in files)
+            created = Flow.Import(ProductDocument?.ProjectKind == ProjectKind.Project ? ProductDocument.ProjectId : null, file) ?? created;
         await LoadProductsAsync(reload: true);
         if (created != null) await OpenProductAsync(created);
     }
@@ -483,6 +563,8 @@ public sealed partial class ProductWindowViewModel : ObservableObject, INodeHost
         NodeActionKind.WhereUsed => WhereUsedCommand,
         NodeActionKind.MarkUnused => MarkUnusedCommand,
         NodeActionKind.ReturnToWork => MarkUnusedCommand,
+        NodeActionKind.Delete => DeleteCommand,
+        NodeActionKind.RemoveReference => RemoveReferenceCommand,
         NodeActionKind.ShowInExplorer => ShowNodeInExplorerCommand,
         NodeActionKind.OpenAsProduct => OpenAsProductCommand,
         NodeActionKind.OpenAsProductInNewWindow => OpenAsProductInNewWindowCommand,
@@ -530,19 +612,29 @@ public sealed partial class ProductWindowViewModel : ObservableObject, INodeHost
         var refPath = n.Kit!.RefPath;
         var ext = Path.GetExtension(refPath);
         var all = Session.Workspace.Adapters.All.SelectMany(a => a.Extensions).Select(e => "*" + e).ToList();
-        var filter = (ext.Length > 1 ? $"«{Path.GetFileName(refPath)}» и файлы *{ext}|*{ext}|" : string.Empty) +
+        var lower = ext.ToLowerInvariant();
+        var kind = lower switch
+        {
+            ".sldprt" => "Детали SOLIDWORKS",
+            ".sldasm" => "Сборки SOLIDWORKS",
+            ".slddrw" => "Чертежи SOLIDWORKS",
+            _ => "Файлы",
+        };
+        var filter = (ext.Length > 1 ? $"{kind} (*{lower})|*{lower}|" : string.Empty) +
                      $"Документы CAD ({string.Join(", ", all)})|{string.Join(";", all)}|Все файлы (*.*)|*.*";
-        string? start = null;
+        string? start = n.LinkPath is { } found ? Path.GetDirectoryName(found) : null;
         try
         {
             var dir = Path.GetDirectoryName(refPath.Replace('/', '\\'));
-            if (!string.IsNullOrEmpty(dir) && Directory.Exists(dir)) start = dir;
+            while (start == null && !string.IsNullOrEmpty(dir) && !Directory.Exists(dir)) dir = Path.GetDirectoryName(dir);
+            if (start == null && !string.IsNullOrEmpty(dir) && Directory.Exists(dir)) start = dir;
         }
         catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
         {
         }
         start ??= Flow.WorkRoot;
-        var file = Dialogs.PickFile($"Файл модели для «{Path.GetFileName(refPath)}»", filter, start);
+        // Имя файла по ссылке подставлено: если он лежит в открытой папке, достаточно нажать «Открыть».
+        var file = Dialogs.PickFile($"Файл модели для «{Path.GetFileName(refPath)}»", filter, start, Path.GetFileName(refPath.Replace('/', '\\')));
         if (file == null) return;
         await Flow.RegisterLinkedAsync(parentId, parent.Kit!.ProjectId, parent.Kit.RelPath, Label(parent), refPath, file);
     }
@@ -551,21 +643,32 @@ public sealed partial class ProductWindowViewModel : ObservableObject, INodeHost
     [RelayCommand(CanExecute = nameof(HasNode))]
     private async Task RegisterLinkedAsync()
     {
-        if (Node is not { Type: NodeType.Unresolved, LinkPath: { } link } n || n.ParentDocument is not { DocumentId: { } parentId } parent) return;
-        await Flow.RegisterLinkedAsync(parentId, parent.Kit!.ProjectId, parent.Kit.RelPath, Label(parent), n.Kit!.RefPath, link);
+        // Все выделенные файлы «по ссылке» (одна и та же ссылка в нескольких местах дерева — один раз).
+        var files = Tree.SelectedNodes
+            .Where(n => n is { Type: NodeType.Unresolved, LinkPath: not null } && n.ParentDocument is { DocumentId: not null, Kit: not null })
+            .Select(n => (n, parent: n.ParentDocument!))
+            .Select(x => new WorkflowController.LinkedFile(x.parent.DocumentId!.Value, x.parent.Kit!.ProjectId, x.parent.Kit.RelPath, Label(x.parent), x.n.Kit!.RefPath, x.n.LinkPath!))
+            .DistinctBy(f => (f.ParentId, f.RefPath.ToUpperInvariant()))
+            .ToList();
+        await Flow.RegisterLinkedManyAsync(files);
     }
 
+    /// <summary>Документы PDM среди выделенных узлов, к которым применимо действие (как в меню одного узла).</summary>
+    private List<Guid> SelectedDocs(NodeActionKind kind) => Tree.SelectedNodes
+        .Where(n => n.DocumentId != null && NodeActionRules.Applies(n, kind, Session.CanModify, ReferenceEquals(n, Tree.Root)))
+        .Select(n => n.DocumentId!.Value).Distinct().ToList();
+
     [RelayCommand(CanExecute = nameof(HasNode))]
-    private Task CheckOutAsync() => Node?.DocumentId is { } id ? Flow.CheckOutAsync(new[] { id }) : Task.CompletedTask;
+    private Task CheckOutAsync() => SelectedDocs(NodeActionKind.CheckOut) is { Count: > 0 } ids ? Flow.CheckOutAsync(ids) : Task.CompletedTask;
 
     [RelayCommand(CanExecute = nameof(HasNode))]
     private Task CheckinNodeAsync() => Flow.CheckinAsync();
 
     [RelayCommand(CanExecute = nameof(HasNode))]
-    private Task UndoCheckOutAsync() => Node?.DocumentId is { } id ? Flow.UndoCheckOutAsync(new[] { id }) : Task.CompletedTask;
+    private Task UndoCheckOutAsync() => SelectedDocs(NodeActionKind.UndoCheckOut) is { Count: > 0 } ids ? Flow.UndoCheckOutAsync(ids) : Task.CompletedTask;
 
     [RelayCommand(CanExecute = nameof(HasNode))]
-    private Task UpdateToLatestAsync() => Node?.DocumentId is { } id ? Flow.UpdateToLatestAsync(new[] { id }) : Task.CompletedTask;
+    private Task UpdateToLatestAsync() => SelectedDocs(NodeActionKind.UpdateToLatest) is { Count: > 0 } ids ? Flow.UpdateToLatestAsync(ids) : Task.CompletedTask;
 
     [RelayCommand(CanExecute = nameof(HasNode))]
     private void Rename()
@@ -579,6 +682,58 @@ public sealed partial class ProductWindowViewModel : ObservableObject, INodeHost
     [RelayCommand(CanExecute = nameof(HasNode))]
     private Task MarkUnusedAsync() =>
         Node is { DocumentId: { } id } n ? Flow.MarkUnusedAsync(id, !n.IsUnused, Label(n)) : Task.CompletedTask;
+
+    /// <summary>
+    /// «Удалить ссылку…» (только администратор): узел «не учтён в PDM» (и другие выделенные с тем же родителем) убирается
+    /// из файла родителя. У детали SOLIDWORKS разрывает внешние ссылки все сразу — поэтому берутся все её неучтённые ссылки.
+    /// </summary>
+    [RelayCommand(CanExecute = nameof(HasNode))]
+    private async Task RemoveReferenceAsync()
+    {
+        if (Node is not { Type: NodeType.Unresolved } n || n.ParentDocument is not { DocumentId: { } parentId } parent) return;
+        var isPart = parent.Type == NodeType.Part;
+        var nodes = isPart
+            ? parent.Children.Where(c => c.Type == NodeType.Unresolved)
+            : Tree.SelectedNodes.Where(s => s.Type == NodeType.Unresolved && ReferenceEquals(s.ParentDocument, parent)).Append(n);
+        var refs = nodes.Select(x => x.Kit!.RefPath).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        ReleasePreviewRequested?.Invoke(this, EventArgs.Empty); // файл родителя не должен быть занят просмотром
+        await Flow.RemoveReferencesAsync(parentId, Label(parent), isPart, refs);
+    }
+
+    /// <summary>
+    /// «Удалить…» (только администратор). Незаписанные свойства удалённого документа убираются. Изделие верхнего уровня
+    /// пропадает из списка изделий (и из закреплённых и недавних); открытое в окне — закрывается.
+    /// </summary>
+    [RelayCommand(CanExecute = nameof(HasNode))]
+    private async Task DeleteAsync()
+    {
+        if (Node is not { DocumentId: { } id } n) return;
+        var isOpenProduct = Product?.DocumentId == id;
+        var isTopLevel = n.IsProductStub || isOpenProduct;
+        ReleasePreviewRequested?.Invoke(this, EventArgs.Empty); // файл не должен быть занят просмотром
+        if (!await Flow.DeleteDocumentAsync(id, Label(n))) return;
+
+        if (isOpenProduct)
+        {
+            // Обновление дерева, начатое удалением, не применится: изделия в окне больше нет.
+            Product = null;
+            ProductDocument = null;
+            PendingProperties.Clear();
+            Tree.Clear();
+            Panel.Show(null, Session.CanModify, false);
+            EmptyText = "Изделие удалено. Выберите другое изделие в списке слева.";
+        }
+        else
+        {
+            PendingProperties.Remove(new[] { id });
+        }
+        if (isTopLevel)
+        {
+            var changed = Session.Profile.Unpin(id) | Session.Profile.ForgetProduct(id);
+            if (changed) SaveProfile();
+            await LoadProductsAsync(reload: true);
+        }
+    }
 
     [RelayCommand(CanExecute = nameof(HasNode))]
     private void ShowNodeInExplorer()
@@ -604,6 +759,19 @@ public sealed partial class ProductWindowViewModel : ObservableObject, INodeHost
     public bool SelectDocument(Guid documentId) => Tree.Select(documentId);
 
     public Task OpenVersionAsync(Guid documentId, int version, string label) => Flow.OpenAsync(documentId, version, label);
+
+    public async Task<bool> WritePropertiesAsync(Guid documentId, IReadOnlyList<SolidBrew.Core.Cad.CadPropertyChange> changes)
+    {
+        // Просмотр держит файл открытым — CAD не сохранил бы его.
+        ReleasePreviewRequested?.Invoke(this, EventArgs.Empty);
+        var ok = await Flow.WritePropertiesAsync(documentId, changes);
+        if (PendingRefresh is { } refresh) await refresh;
+        if (ok) PendingProperties.Remove(new[] { documentId });
+        // Карточка перечитывается: новая версия, свойства из файла.
+        if (Tree.SelectedNode is { } node && node.DocumentId == documentId)
+            Panel.Show(node, Session.CanModify, ReferenceEquals(node, Tree.Root));
+        return ok;
+    }
 
     private void NotifyAll()
     {

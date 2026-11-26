@@ -87,6 +87,31 @@ public sealed class ImportViewModelTests : IDisposable
     }
 
     [Fact]
+    public async Task LinkedFile_FolderRenamed_RelocatedTab_ConfirmEnablesImport()
+    {
+        var model = TestCadWriter.Create(_env.Path("Новая", "Models", "Модель.tcprt"));
+        var part = TestCadWriter.Create(_env.Path("Новая", "Узел", "Деталь.tcprt"), new[] { _env.Path("Старая", "Models", "Модель.tcprt") });
+        var s = _env.Session("ivanov");
+        var vm = new ImportViewModel(s, _env.Project.Id, new ImportPreset(part, string.Empty, "Узел", _env.Path("Старая", "Узел", "Деталь.tcprt")));
+        await vm.InitializeAsync(); // отчёт строится сразу
+
+        var row = Assert.Single(vm.Relocated);
+        Assert.Empty(vm.NameOnly);
+        Assert.Empty(vm.Missing);
+        Assert.Equal(model, row.TargetPath);
+        Assert.Contains("Старая", row.MovedText);
+        Assert.Contains("Папка перенесена (1)", vm.RelocatedHeader);
+        Assert.False(vm.ImportCommand.CanExecute(null));
+
+        row.Accept = true;
+        Assert.True(vm.ImportCommand.CanExecute(null));
+        Assert.Contains(vm.Documents, d => d.IsIncluded && d.RelPath == "Models/Модель.tcprt");
+        Assert.Contains(vm.Documents, d => d.IsIncluded && d.RelPath == "Деталь.tcprt");
+        vm.CancelCommand.Execute(null);
+        vm.OnClosed();
+    }
+
+    [Fact]
     public async Task UnconfirmedNameOnly_StaysMissing_UntilAccepted()
     {
         var src = _env.Path("src");

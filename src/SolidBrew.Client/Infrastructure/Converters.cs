@@ -10,13 +10,14 @@ namespace SolidBrew.Client.Infrastructure;
 public sealed class MarkToBrushConverter : IValueConverter
 {
     // Та же схема, что у кружков дерева (StatusDotToBrushConverter): синий — взят мной, красный — изменён,
-    // жёлтый — устарел / пересохранить, фиолетовый — взят другим, серый — нет файла; черновик — бирюзовый.
+    // жёлтый — пересохранить, розовый — устарел, фиолетовый — проблема, оранжевый — взят другим, серый — нет файла;
+    // черновик — бирюзовый.
     public static readonly Brush Free = Brushes.Transparent;
     public static readonly Brush Mine = StatusDotToBrushConverter.Blue;
-    public static readonly Brush Other = StatusDotToBrushConverter.Purple;
+    public static readonly Brush Other = StatusDotToBrushConverter.Orange;
     public static readonly Brush Modified = StatusDotToBrushConverter.Red;
     public static readonly Brush Draft = StatusDotToBrushConverter.Teal;
-    public static readonly Brush Outdated = StatusDotToBrushConverter.Yellow;
+    public static readonly Brush Outdated = StatusDotToBrushConverter.Pink;
     public static readonly Brush Missing = StatusDotToBrushConverter.Gray;
 
     private static Brush Frozen(string color)
@@ -49,6 +50,8 @@ public sealed class StatusDotToBrushConverter : IValueConverter
     public static readonly Brush Red = Frozen("#D93025");
     public static readonly Brush Yellow = Frozen("#F2B705");
     public static readonly Brush Purple = Frozen("#7B1FA2");
+    public static readonly Brush Pink = Frozen("#EC5FA8");
+    public static readonly Brush Orange = Frozen("#E8710A");
     public static readonly Brush Gray = Frozen("#9AA0A6");
     public static readonly Brush Teal = Frozen("#00897B");
 
@@ -65,8 +68,11 @@ public sealed class StatusDotToBrushConverter : IValueConverter
         StatusDot.Mine => Blue,
         StatusDot.MineModified => Red,
         StatusDot.NeedsResave => Yellow,
-        StatusDot.Other => Purple,
+        StatusDot.Other => Orange,
         StatusDot.Missing => Gray,
+        StatusDot.Outdated => Pink,
+        StatusDot.Problem => Purple,
+        StatusDot.NotInPdm => Teal,
         _ => Brushes.Transparent,
     };
 
@@ -130,9 +136,11 @@ public static class Legend
         new LegendEntry(StatusDotToBrushConverter.Green, "сдан в хранилище, правок нет"),
         new LegendEntry(StatusDotToBrushConverter.Blue, "взят мной, не изменён"),
         new LegendEntry(StatusDotToBrushConverter.Red, "изменён — сдайте"),
-        new LegendEntry(StatusDotToBrushConverter.Yellow, "сборку / чертёж надо пересохранить; есть новая версия"),
-        new LegendEntry(StatusDotToBrushConverter.Purple, "взят другим"),
-        new LegendEntry(StatusDotToBrushConverter.Teal, "черновик (новый файл)"),
+        new LegendEntry(StatusDotToBrushConverter.Yellow, "сборку / чертёж надо пересохранить"),
+        new LegendEntry(StatusDotToBrushConverter.Pink, "устарел: есть новая версия"),
+        new LegendEntry(StatusDotToBrushConverter.Purple, "проблема"),
+        new LegendEntry(StatusDotToBrushConverter.Orange, "взят другим"),
+        new LegendEntry(StatusDotToBrushConverter.Teal, "не учтён в PDM: новый файл или файл по ссылке"),
         new LegendEntry(StatusDotToBrushConverter.Gray, "нет файла / не учтён"),
     };
 }

@@ -2,6 +2,7 @@ using System.Collections.ObjectModel;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using SolidBrew.Client.Infrastructure;
+using SolidBrew.Core.Cad;
 using SolidBrew.Core.Contracts;
 
 namespace SolidBrew.Client.ViewModels;
@@ -19,6 +20,15 @@ public interface INodeHost
 
     /// <summary>«Открыть» выбранную версию документа в рабочую папку окна.</summary>
     Task OpenVersionAsync(Guid documentId, int version, string label);
+
+    /// <summary>
+    /// Записать свойства CAD в файл документа и сдать новую версию. После успеха панель узла показывается заново
+    /// (с новой версией). false — не записано (причина уже показана).
+    /// </summary>
+    Task<bool> WritePropertiesAsync(Guid documentId, IReadOnlyList<CadPropertyChange> changes);
+
+    /// <summary>Заполненные в карточках и ещё не записанные значения свойств (записываются по «Сдать»).</summary>
+    PendingPropertyEdits PendingProperties { get; }
 }
 
 /// <summary>Узел, для которого создаются вкладки, и общий для вкладок доступ к сведениям о документе.</summary>
@@ -207,26 +217,146 @@ public sealed record InfoRow(string Label, string Value);
 /// <summary>Строка таблицы свойств: имя свойства и значения по столбцам (уровень файла и конфигурации).</summary>
 public sealed class PropertyPivotRow
 {
-    public PropertyPivotRow(string name, string[] values)
+    public PropertyPivotRow(string name, string[] values, string[]? scopes = null, bool editable = false, Action? changed = null, string[]? alsoScopes = null)
     {
         Name = name;
         Values = values;
+        Cells = values.Select((v, i) => new PropertyCell(scopes?[i] ?? string.Empty, v, editable && string.IsNullOrWhiteSpace(v), changed, alsoScopes)).ToArray();
     }
 
     public string Name { get; }
+    /// <summary>Значения из сданной версии (до правки в карточке).</summary>
     public string[] Values { get; }
+    /// <summary>Ячейки по столбцам; пустую можно заполнить, если документ можно менять.</summary>
+    public PropertyCell[] Cells { get; }
 
     /// <summary>Значения нет ни в одной конфигурации.</summary>
     public bool IsEmpty => Values.All(string.IsNullOrWhiteSpace);
 }
 
-/// <summary>«Карточка»: свойства CAD по конфигурациям (только чтение — источник истины файл), файл, версия CAD, проект.</summary>
+/// <summary>Значение свойства в одном столбце (уровень файла или конфигурация).</summary>
+public sealed partial class PropertyCell : ObservableObject
+{
+    private readonly Action? _changed;
+
+    public PropertyCell(string scope, string original, bool isEditable, Action? changed, string[]? alsoScopes = null)
+    {
+        Scope = scope;
+        Original = original;
+        _value = original;
+        IsEditable = isEditable;
+        _changed = changed;
+        AlsoScopes = alsoScopes ?? Array.Empty<string>();
+    }
+
+    /// <summary>Конфигурация; «» — уровень файла.</summary>
+    public string Scope { get; }
+    /// <summary>Куда ещё записать то же значение (конфигурации, где свойство есть, но пустое) — режим «одно значение».</summary>
+    public string[] AlsoScopes { get; }
+    public string Original { get; }
+    /// <summary>Пустое в файле — можно заполнить (записывается в файл CAD и сдаётся новой версией).</summary>
+    public bool IsEditable { get; }
+
+    [ObservableProperty]
+    private string _value;
+
+    /// <summary>Заполнено в карточке и ещё не записано.</summary>
+    public bool IsChanged => IsEditable && !string.IsNullOrWhiteSpace(Value) && !string.Equals(Value.Trim(), Original.Trim(), StringComparison.Ordinal);
+
+    partial void OnValueChanged(string value)
+    {
+        OnPropertyChanged(nameof(IsChanged));
+        _changed?.Invoke();
+    }
+}
+
+/// <summary>
+/// «Карточка»: свойства CAD по конфигурациям, файл, версия CAD, проект. Источник истины — файл: пустые свойства можно
+/// заполнить здесь, и PDM запишет их в файл CAD и сдаст новую версию («Записать в файл»).
+/// </summary>
 public sealed partial class CardTabViewModel : NodeTabViewModel
 {
     public const string FileLevelColumn = "Файл (общие)";
 
     public CardTabViewModel(NodeContext context) : base(context)
     {
+    }
+
+    /// <summary>Пустые свойства можно заполнить: документ в рабочей папке, последняя версия, не взят другим, есть права.</summary>
+    public bool CanEdit => Context.Session.CanModify && Node.IsDocument && !Node.IsProductStub && Node.LocalRelPath != null
+                           && !Node.IsOutdated && !Node.IsLockedByOther;
+
+    /// <summary>Почему заполнять нельзя (подсказка под таблицей); null — можно.</summary>
+    public string? EditHint => CanEdit || !Node.IsDocument ? null
+        : !Context.Session.CanModify ? "Заполнять свойства может конструктор или администратор."
+        : Node.IsLockedByOther ? "Документ взят в работу другим пользователем — свойства заполнить нельзя."
+        : Node.IsOutdated ? "В рабочей папке не последняя версия — обновите документ, чтобы заполнить свойства."
+        : "Документа нет в рабочей папке — откройте изделие, чтобы заполнить свойства.";
+
+    /// <summary>Сколько заполненных и ещё не записанных значений.</summary>
+    public int PendingCount => _allProperties.Sum(r => r.Cells.Count(c => c.IsChanged));
+    public bool HasPending => PendingCount > 0;
+    public string SaveText => "Записать сейчас";
+
+    /// <summary>Подсказка над кнопками: сколько заполнено здесь и в других документах.</summary>
+    public string PendingText
+    {
+        get
+        {
+            var others = Context.Host.PendingProperties.Documents.Count(d => d != Node.DocumentId);
+            return $"Заполнено значений: {PendingCount}." + (others > 0 ? $" Ещё в других документах: {others}." : string.Empty) +
+                   " «Сдать» вверху окна запишет их во все файлы и сдаст документы новыми версиями; «Записать сейчас» — только этот документ.";
+        }
+    }
+
+    /// <summary>Строки строятся заново — значения из хранилища подставляются, не записываясь в него повторно.</summary>
+    private bool _building;
+
+    private void OnCellChanged()
+    {
+        // Заполненное хранится в окне изделия: переход к другому узлу его не теряет, «Сдать» записывает всё сразу.
+        if (!_building && _editable && Node.DocumentId is { } id)
+            Context.Host.PendingProperties.Set(id, Format.Doc(Node.LocalRelPath ?? Node.FileName, Node.Designation), PendingChanges());
+        OnPropertyChanged(nameof(PendingCount));
+        OnPropertyChanged(nameof(HasPending));
+        OnPropertyChanged(nameof(PendingText));
+        SaveCommand.NotifyCanExecuteChanged();
+        RevertCommand.NotifyCanExecuteChanged();
+    }
+
+    /// <summary>Заполненные значения для записи.</summary>
+    public List<CadPropertyChange> PendingChanges() => _allProperties
+        .SelectMany(r => r.Cells.Where(c => c.IsChanged).SelectMany(c => new[] { c.Scope }.Concat(c.AlsoScopes).Distinct(StringComparer.Ordinal)
+            .Select(scope => new CadPropertyChange(scope, r.Name, c.Value.Trim()))))
+        .ToList();
+
+    private bool _saving;
+
+    private bool CanSave() => HasPending && !_saving;
+
+    /// <summary>Записать заполненные свойства в файл CAD и сдать новую версию.</summary>
+    [RelayCommand(CanExecute = nameof(CanSave))]
+    private async Task SaveAsync()
+    {
+        if (Node.DocumentId is not { } id) return;
+        _saving = true;
+        SaveCommand.NotifyCanExecuteChanged();
+        try
+        {
+            await Context.Host.WritePropertiesAsync(id, PendingChanges());
+        }
+        finally
+        {
+            _saving = false;
+            SaveCommand.NotifyCanExecuteChanged();
+        }
+    }
+
+    /// <summary>Сбросить заполненное в карточке.</summary>
+    [RelayCommand(CanExecute = nameof(HasPending))]
+    private void Revert()
+    {
+        foreach (var c in _allProperties.SelectMany(r => r.Cells).Where(c => c.IsEditable)) c.Value = c.Original;
     }
 
     public ObservableCollection<InfoRow> Info { get; } = new();
@@ -265,8 +395,28 @@ public sealed partial class CardTabViewModel : NodeTabViewModel
         OnPropertyChanged(nameof(ShowEmptyText));
     }
 
-    private void ApplyEmptyFilter() =>
+    private void ApplyEmptyFilter()
+    {
         Properties = ShowEmpty ? _allProperties : _allProperties.Where(p => !p.IsEmpty).ToList();
+        // Один столбец значений — таблица делится на две половины рядом (по порядку: первая половина слева).
+        var half = (Properties.Count + 1) / 2;
+        LeftProperties = Properties.Take(half).ToList();
+        RightProperties = Properties.Skip(half).ToList();
+        OnPropertyChanged(nameof(IsTwoColumn));
+        OnPropertyChanged(nameof(IsOneTable));
+    }
+
+    /// <summary>Левая и правая половины свойств — в режиме одного значения таблица показывается в две колонки.</summary>
+    [ObservableProperty]
+    private IReadOnlyList<PropertyPivotRow> _leftProperties = Array.Empty<PropertyPivotRow>();
+
+    [ObservableProperty]
+    private IReadOnlyList<PropertyPivotRow> _rightProperties = Array.Empty<PropertyPivotRow>();
+
+    /// <summary>Две таблицы рядом: режим одного значения и есть что показать.</summary>
+    public bool IsTwoColumn => !ByConfiguration && HasProperties;
+    /// <summary>Одна широкая таблица: режим «По конфигурациям».</summary>
+    public bool IsOneTable => ByConfiguration && HasProperties;
 
     protected override async Task LoadCoreAsync(CancellationToken ct)
     {
@@ -287,7 +437,9 @@ public sealed partial class CardTabViewModel : NodeTabViewModel
         Info.Add(new InfoRow("Файл", node.LocalRelPath ?? doc.RelPath));
         if (v != null) Info.Add(new InfoRow("Версия", $"v{v.Number} от {Format.Time(v.At)}, {Author(v)}" + (v.Number == doc.LatestVersion ? " (последняя)" : $" (последняя v{doc.LatestVersion})")));
         Info.Add(new InfoRow("Проект", doc.ProjectName + (doc.ProjectKind == ProjectKind.Library ? " (библиотека)" : string.Empty)));
-        Info.Add(new InfoRow("CAD", doc.Cad + (v?.CadVersion is { Length: > 0 } cv ? ", " + cv : string.Empty)));
+        // Версия файла уже содержит название CAD («SOLIDWORKS 2026»); без неё — название CAD, а не внутренний код.
+        Info.Add(new InfoRow("CAD", v?.CadVersion is { Length: > 0 } cv ? cv
+            : Context.Session.Workspace.Adapters.Get(doc.Cad)?.DisplayName ?? doc.Cad));
         if (v != null && v.Configurations.Count > 0) Info.Add(new InfoRow("Конфигурации", string.Join(", ", v.Configurations)));
         if (v != null) Info.Add(new InfoRow("Размер", Format.Bytes(v.Size)));
         if (doc.Status == DocumentStatus.Unused) Info.Add(new InfoRow("Статус", "не используется"));
@@ -301,15 +453,112 @@ public sealed partial class CardTabViewModel : NodeTabViewModel
         if (v.Properties.ContainsKey(string.Empty)) keys.Add(string.Empty);
         keys.AddRange(v.Configurations.Where(c => v.Properties.ContainsKey(c)));
         keys.AddRange(v.Properties.Keys.Where(k => k.Length > 0 && !keys.Contains(k)));
-        var names = keys.SelectMany(k => v.Properties[k].Keys).Distinct(StringComparer.CurrentCultureIgnoreCase)
+        _version = v;
+        _keys = keys;
+        // Служебное свойство PDM (убранные ссылки) в карточке не показывается.
+        _names = keys.SelectMany(k => v.Properties[k].Keys)
+            .Where(n => !string.Equals(n, DocumentProperties.RemovedReferencesKey, StringComparison.OrdinalIgnoreCase))
+            .Distinct(StringComparer.CurrentCultureIgnoreCase)
             .OrderBy(n => n, StringComparer.CurrentCultureIgnoreCase).ToList();
-        Columns = keys.Select(k => k.Length == 0 ? FileLevelColumn : k).ToList();
-        _allProperties = names.Select(n => new PropertyPivotRow(n, keys.Select(k => Find(v.Properties[k], n)).ToArray())).ToList();
+        // Карточка показывает версию из рабочей папки; заполнять — только её, и только если она последняя.
+        _editable = CanEdit && v.Number == doc.LatestVersion;
+        OnPropertyChanged(nameof(CanEdit));
+        OnPropertyChanged(nameof(EditHint));
+        OnPropertyChanged(nameof(HasConfigurations));
+        BuildRows();
+        if (_names.Count == 0) Message = "В файле нет свойств.";
+        else if (Properties.Count == 0) Message = "Все свойства файла пустые.";
+    }
+
+    public const string ValueColumn = "Значение";
+
+    private VersionDto? _version;
+    private List<string> _keys = new();
+    private List<string> _names = new();
+    private bool _editable;
+
+    /// <summary>
+    /// Показывать значения по конфигурациям (столбцы «Файл (общие)» и каждая конфигурация). По умолчанию — один столбец
+    /// «Значение»: общее значение, а если его нет — значение конфигураций.
+    /// </summary>
+    [ObservableProperty]
+    private bool _byConfiguration;
+
+    partial void OnByConfigurationChanged(bool value) => BuildRows();
+
+    /// <summary>Есть конфигурации со своими свойствами (кроме служебных развёрток листового металла) — есть что показывать по ним.</summary>
+    public bool HasConfigurations => _keys.Any(k => k.Length > 0 && !IsFlatPattern(k));
+
+    /// <summary>Служебная конфигурация развёртки листового металла («По умолчаниюSM-FLAT-PATTERN»): её SOLIDWORKS создаёт сам.</summary>
+    public static bool IsFlatPattern(string configuration) => configuration.IndexOf("FLAT-PATTERN", StringComparison.OrdinalIgnoreCase) >= 0;
+
+    private void BuildRows()
+    {
+        if (_version is not { } v) return;
+        string ValueOf(string k, string n) => v.Properties.TryGetValue(k, out var p) ? Find(p, n) : string.Empty;
+        bool Has(string k, string n) => v.Properties.TryGetValue(k, out var p) && p.Keys.Any(x => string.Equals(x, n, StringComparison.CurrentCultureIgnoreCase));
+        var configs = _keys.Where(k => k.Length > 0).ToList();
+        var visible = configs.Where(k => !IsFlatPattern(k)).ToList();
+
+        if (ByConfiguration)
+        {
+            // Столбец «Файл (общие)» есть всегда, когда можно заполнять (у чертежа и детали без общих свойств — тоже).
+            var keys = new List<string>();
+            if (v.Properties.ContainsKey(string.Empty) || _editable) keys.Add(string.Empty);
+            keys.AddRange(visible);
+            Columns = keys.Select(k => k.Length == 0 ? FileLevelColumn : k).ToList();
+            _allProperties = _names.Select(n => new PropertyPivotRow(n, keys.Select(k => ValueOf(k, n)).ToArray(), keys.ToArray(), _editable, OnCellChanged)).ToList();
+        }
+        else
+        {
+            Columns = new[] { ValueColumn };
+            _allProperties = _names.Select(n =>
+            {
+                var shared = ValueOf(string.Empty, n);
+                string shown;
+                if (!string.IsNullOrWhiteSpace(shared))
+                {
+                    shown = shared;
+                }
+                else
+                {
+                    var own = visible.Select(k => (Config: k, Value: ValueOf(k, n))).Where(x => !string.IsNullOrWhiteSpace(x.Value)).ToList();
+                    shown = own.Select(x => x.Value).Distinct(StringComparer.Ordinal).Count() switch
+                    {
+                        0 => string.Empty,
+                        1 => own[0].Value,
+                        _ => string.Join("; ", own.Select(x => $"{x.Config}: {x.Value}")),
+                    };
+                }
+                // Заполненное здесь пишется в общие свойства и в конфигурации, где свойство есть, но пустое:
+                // иначе пустое свойство конфигурации перекрыло бы общее в спецификации и штампе.
+                var also = configs.Where(k => Has(k, n)).ToArray();
+                return new PropertyPivotRow(n, new[] { shown }, new[] { string.Empty }, _editable, OnCellChanged, also);
+            }).ToList();
+        }
+
+        // Заполненное раньше (в этой карточке или до перехода к другому узлу) — обратно в ячейки.
+        if (Node.DocumentId is { } id && Context.Host.PendingProperties.For(id) is { Count: > 0 } saved)
+        {
+            _building = true;
+            try
+            {
+                foreach (var row in _allProperties)
+                    foreach (var cell in row.Cells.Where(c => c.IsEditable))
+                    {
+                        var hit = saved.FirstOrDefault(c => c.Configuration == cell.Scope && string.Equals(c.Name, row.Name, StringComparison.CurrentCultureIgnoreCase));
+                        if (hit != null) cell.Value = hit.Value;
+                    }
+            }
+            finally
+            {
+                _building = false;
+            }
+        }
+        OnCellChanged();
         EmptyCount = _allProperties.Count(p => p.IsEmpty);
         OnPropertyChanged(nameof(HasAnyProperties));
         ApplyEmptyFilter();
-        if (names.Count == 0) Message = "В файле нет свойств.";
-        else if (Properties.Count == 0) Message = "Все свойства файла пустые.";
     }
 
     private static string Find(Dictionary<string, string> props, string name) =>

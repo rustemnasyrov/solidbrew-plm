@@ -405,9 +405,13 @@ public sealed class ProductWindowTests : IDisposable
         // Карточка: свойства по конфигурациям.
         var card = Assert.IsType<CardTabViewModel>(vm.Panel.SelectedTab!.Content);
         await card.EnsureLoadedAsync();
+        Assert.Equal(new[] { CardTabViewModel.ValueColumn }, card.Columns);
+        Assert.Contains(card.Properties, p => p.Name == "Обозначение" && p.Values.Contains("АБВ.000"));
+        card.ByConfiguration = true;
         Assert.Contains(CardTabViewModel.FileLevelColumn, card.Columns);
         Assert.Contains(card.Properties, p => p.Name == "Обозначение" && p.Values.Contains("АБВ.000"));
         Assert.Contains(card.Info, i => i.Label == "Проект" && i.Value.Contains("Изделие АБВ"));
+        Assert.Contains(card.Info, i => i.Label == "CAD" && i.Value == "TestCad 2018"); // без повтора кода CAD
 
         // Состав сборки: прямые компоненты.
         Assert.True(vm.Panel.SelectTab(NodeTabIds.Composition));
@@ -484,10 +488,307 @@ public sealed class ProductWindowTests : IDisposable
 
             card.ShowEmpty = true;
             Assert.Equal(6, card.Properties.Count);
+            // Одно значение — две половины рядом, по порядку: первая половина слева.
+            Assert.True(card.IsTwoColumn);
+            Assert.Equal(card.Properties.Take(3), card.LeftProperties);
+            Assert.Equal(card.Properties.Skip(3), card.RightProperties);
+            card.ByConfiguration = true;
+            Assert.False(card.IsTwoColumn);
+            Assert.True(card.IsOneTable);
+            card.ByConfiguration = false;
             Assert.Contains(card.Properties, p => p.Name == "а_Взам_Инв_№" && p.IsEmpty);
             card.ShowEmpty = false;
             Assert.Equal(3, card.Properties.Count);
         }
+    }
+
+    [Fact]
+    public async Task Card_FillEmptyProperties_WrittenToFile_NewVersion()
+    {
+        var s = _env.Session("ivanov");
+        var file = _env.Path("src4", "Пластина.tcprt");
+        TestCadWriter.Write(file, new TestCadDocument().Config("A", "B")
+            .Prop("Обозначение", "ПЛ.001").Prop("Разработал", "")
+            .Prop("Масса", "", "A").Prop("Масса", "1,2", "B"));
+        Guid id;
+        using (var report = await s.Workspace.PrepareImportAsync(file))
+        {
+            var result = await s.Workspace.ExecuteImportAsync(report, _env.Project.Id, "Шаблон ГОСТ");
+            Assert.True(result.Success, result.Message);
+            id = result.HeadDocumentId;
+        }
+        var vm = new ProductWindowViewModel(s);
+        _env.Dialogs.ChooseAnswers.Enqueue(0);
+        Assert.True(await vm.OpenProductAsync(new ProductRef(id)), _env.Dialogs.AllErrors);
+        await SelectAsync(vm, vm.Tree.Root!);
+        var card = Assert.IsType<CardTabViewModel>(vm.Panel.SelectedTab!.Content);
+        await card.EnsureLoadedAsync();
+        card.ShowEmpty = true;
+        card.ByConfiguration = true;
+
+        Assert.True(card.CanEdit);
+        Assert.Equal(new[] { "", "A", "B" }, card.Properties[0].Cells.Select(c => c.Scope));
+        var designation = card.Properties.Single(p => p.Name == "Обозначение");
+        Assert.False(designation.Cells[0].IsEditable); // заполненное в файле — только в CAD
+        var mass = card.Properties.Single(p => p.Name == "Масса");
+        Assert.True(mass.Cells[1].IsEditable);  // пусто в A
+        Assert.False(mass.Cells[2].IsEditable); // 1,2 в B
+        Assert.False(card.HasPending);
+        Assert.False(card.SaveCommand.CanExecute(null));
+
+        card.Properties.Single(p => p.Name == "Разработал").Cells[0].Value = "Иванов";
+        mass.Cells[1].Value = "0,9";
+        Assert.Equal(2, card.PendingCount);
+        Assert.Equal(1, vm.PendingProperties.Count);
+        Assert.Equal("Сдать (1)", vm.CheckinText);
+
+        // «Отменить» — всё как в файле.
+        card.RevertCommand.Execute(null);
+        Assert.False(card.HasPending);
+        card.Properties.Single(p => p.Name == "Разработал").Cells[0].Value = "Иванов";
+        mass.Cells[1].Value = "0,9";
+
+        await card.SaveCommand.ExecuteAsync(null);
+
+        Assert.Empty(_env.Dialogs.Errors);
+        var doc = _env.Server.Doc(id);
+        Assert.Equal(2, doc.Latest.Number);
+        Assert.Null(doc.Lock);
+        Assert.Equal("Иванов", doc.Latest.Properties[""]["Разработал"]);
+        Assert.Equal("0,9", doc.Latest.Properties["A"]["Масса"]);
+        Assert.Equal("1,2", doc.Latest.Properties["B"]["Масса"]);
+        var local = Path.Combine(vm.Flow.WorkRoot!, "Пластина.tcprt");
+        Assert.True(TestEnv.IsReadOnly(local));
+        Assert.Contains("prop: Разработал=Иванов", File.ReadAllText(local));
+
+        // Карточка перечитана: новая версия, заполненные значения из файла, ничего не ждёт записи.
+        var reloaded = Assert.IsType<CardTabViewModel>(vm.Panel.SelectedTab!.Content);
+        Assert.NotSame(card, reloaded);
+        await reloaded.EnsureLoadedAsync();
+        Assert.False(reloaded.HasPending);
+        Assert.Contains(reloaded.Properties, p => p.Name == "Разработал" && p.Values[0] == "Иванов" && !p.Cells[0].IsEditable);
+        Assert.Contains(reloaded.Info, i => i.Label == "Версия" && i.Value.StartsWith("v2"));
+    }
+
+    [Fact]
+    public async Task Card_OneValueColumn_FlatPatternHidden_FillWritesSharedAndEmptyConfigs()
+    {
+        var s = _env.Session("ivanov");
+        var file = _env.Path("src5", "Лист.tcprt");
+        TestCadWriter.Write(file, new TestCadDocument().Config("По умолчанию", "По умолчаниюSM-FLAT-PATTERN")
+            .Prop("Обозначение", "ЛС.001").Prop("Покрытие", "")
+            .Prop("Покрытие", "", "По умолчанию").Prop("Масса", "0,4", "По умолчанию")
+            .Prop("Библиотечные элементы", "No").Prop("Библиотечные элементы", "", "По умолчанию")
+            .Prop("Развёртка", "служебное", "По умолчаниюSM-FLAT-PATTERN"));
+        Guid id;
+        using (var report = await s.Workspace.PrepareImportAsync(file))
+        {
+            var result = await s.Workspace.ExecuteImportAsync(report, _env.Project.Id, "Лист");
+            Assert.True(result.Success, result.Message);
+            id = result.HeadDocumentId;
+        }
+        var vm = new ProductWindowViewModel(s);
+        _env.Dialogs.ChooseAnswers.Enqueue(0);
+        Assert.True(await vm.OpenProductAsync(new ProductRef(id)), _env.Dialogs.AllErrors);
+        await SelectAsync(vm, vm.Tree.Root!);
+        var card = Assert.IsType<CardTabViewModel>(vm.Panel.SelectedTab!.Content);
+        await card.EnsureLoadedAsync();
+        card.ShowEmpty = true;
+
+        // Один столбец: общее значение, а если его нет — значение конфигурации.
+        Assert.Equal(new[] { CardTabViewModel.ValueColumn }, card.Columns);
+        string Shown(string name) => card.Properties.Single(p => p.Name == name).Values.Single();
+        Assert.Equal("No", Shown("Библиотечные элементы"));
+        Assert.Equal("0,4", Shown("Масса"));
+        Assert.False(card.Properties.Single(p => p.Name == "Масса").Cells[0].IsEditable);
+        Assert.True(card.HasConfigurations);
+
+        // По конфигурациям: развёртка листового металла не показывается.
+        card.ByConfiguration = true;
+        Assert.Equal(new[] { CardTabViewModel.FileLevelColumn, "По умолчанию" }, card.Columns);
+        card.ByConfiguration = false;
+
+        var coating = card.Properties.Single(p => p.Name == "Покрытие");
+        Assert.True(coating.Cells[0].IsEditable);
+        coating.Cells[0].Value = "Ан.Окс";
+        var changes = card.PendingChanges();
+        Assert.Equal(new[] { "", "По умолчанию" }, changes.Select(c => c.Configuration)); // общее и пустое в конфигурации
+        await card.SaveCommand.ExecuteAsync(null);
+
+        Assert.Empty(_env.Dialogs.Errors);
+        var props = _env.Server.Doc(id).Latest.Properties;
+        Assert.Equal("Ан.Окс", props[""]["Покрытие"]);
+        Assert.Equal("Ан.Окс", props["По умолчанию"]["Покрытие"]);
+        Assert.Equal("служебное", props["По умолчаниюSM-FLAT-PATTERN"]["Развёртка"]);
+    }
+
+    [Fact]
+    public async Task BatchFill_AssemblyPartDrawing_KeptAcrossNodes_CheckinWritesAll()
+    {
+        var s = _env.Session("ivanov");
+        var src = _env.Path("src6");
+        var part = TestCadWriter.Write(Path.Combine(src, "Деталь.tcprt"), new TestCadDocument().Prop("Обозначение", "Д.001").Prop("Разработал", ""));
+        TestCadWriter.Write(Path.Combine(src, "Деталь.tcdrw"), new TestCadDocument().Prop("Обозначение", "Д.001 Ч").Prop("Разработал", "").Ref(part));
+        var asm = TestCadWriter.Write(Path.Combine(src, "Сборка.tcasm"), new TestCadDocument().Prop("Обозначение", "С.000").Prop("Разработал", "").Ref(part));
+        Guid head;
+        using (var report = await s.Workspace.PrepareImportAsync(asm))
+        {
+            var result = await s.Workspace.ExecuteImportAsync(report, _env.Project.Id, "Постановка");
+            Assert.True(result.Success, result.Message + string.Join("\n", result.Problems));
+            head = result.HeadDocumentId;
+        }
+        var vm = new ProductWindowViewModel(s);
+        _env.Dialogs.ChooseAnswers.Enqueue(0);
+        Assert.True(await vm.OpenProductAsync(new ProductRef(head)), _env.Dialogs.AllErrors);
+
+        async Task<CardTabViewModel> CardOf(ProductNodeViewModel node)
+        {
+            await SelectAsync(vm, node);
+            var card = Assert.IsType<CardTabViewModel>(vm.Panel.SelectedTab!.Content);
+            await card.EnsureLoadedAsync();
+            card.ShowEmpty = true;
+            return card;
+        }
+        PropertyCell Author(CardTabViewModel card) => card.Properties.Single(p => p.Name == "Разработал").Cells[0];
+
+        Author(await CardOf(vm.Tree.Root!)).Value = "Иванов";
+        Author(await CardOf(Node(vm, "Д.001"))).Value = "Петров";
+        var drawingCard = await CardOf(Node(vm, "Д.001 Ч"));
+        Author(drawingCard).Value = "Сидоров";
+        Assert.Contains("Ещё в других документах: 2", drawingCard.PendingText);
+        Assert.Equal(3, vm.PendingProperties.Count);
+        Assert.Equal("Сдать (3)", vm.CheckinText);
+        Assert.True(vm.CheckinAllCommand.CanExecute(null));
+
+        // Вернулись к сборке — заполненное на месте, ещё не записано.
+        var back = await CardOf(vm.Tree.Root!);
+        Assert.Equal("Иванов", Author(back).Value);
+        Assert.True(back.HasPending);
+        Assert.Equal(1, _env.Server.Doc(head).Latest.Number);
+
+        var confirms = _env.Dialogs.Confirms.Count;
+        await vm.CheckinAllCommand.ExecuteAsync(null);
+
+        Assert.Empty(_env.Dialogs.Errors);
+        var confirm = Assert.Single(_env.Dialogs.Confirms.Skip(confirms));
+        Assert.Equal(3, confirm.Details.Count);
+        Assert.Contains(confirm.Details, d => d.Contains("Разработал = Сидоров"));
+        foreach (var (designation, author) in new[] { ("С.000", "Иванов"), ("Д.001", "Петров"), ("Д.001 Ч", "Сидоров") })
+        {
+            var doc = _env.Server.Docs.Values.Single(d => d.Latest.Properties[""]["Обозначение"] == designation);
+            Assert.Equal(2, doc.Latest.Number);
+            Assert.Equal(author, doc.Latest.Properties[""]["Разработал"]);
+            Assert.Null(doc.Lock);
+        }
+        Assert.Equal(0, vm.PendingProperties.Count);
+        Assert.Equal("Сдать", vm.CheckinText);
+        var reloaded = Assert.IsType<CardTabViewModel>(vm.Panel.SelectedTab!.Content);
+        await reloaded.EnsureLoadedAsync();
+        Assert.False(reloaded.HasPending);
+    }
+
+    [Fact]
+    public async Task Delete_OnlyAdminSeesIt_DeletesUnreferenced_RefusesReferenced()
+    {
+        // Конструктор пункта «Удалить…» не видит.
+        var (_, designerVm, _) = await OpenProductAsync("ivanov");
+        await SelectAsync(designerVm, Node(designerVm, "АБВ.001 СБ"));
+        Assert.DoesNotContain(NodeActionKind.Delete, designerVm.Panel.MoreKinds);
+
+        var s = _env.Session("admin");
+        var vm = new ProductWindowViewModel(s);
+        _env.Dialogs.ChooseAnswers.Enqueue(0);
+        Assert.True(await vm.OpenProductAsync(new ProductRef(_env.Server.Docs.Values.Single(d => d.Latest.RelPath == "Изделие.tcasm").Id)), _env.Dialogs.AllErrors);
+
+        // Изделие окна администратор тоже может удалить.
+        await SelectAsync(vm, vm.Tree.Root!);
+        Assert.Contains(NodeActionKind.Delete, vm.Panel.MoreKinds);
+
+        // Деталь, на которую ссылается сборка, — отказ с понятной причиной.
+        await SelectAsync(vm, Node(vm, "АБВ.002"));
+        Assert.Contains(NodeActionKind.Delete, vm.Panel.MoreKinds);
+        await RunAsync(vm, vm.DeleteCommand);
+        Assert.Contains("не используется", _env.Dialogs.AllErrors);
+        Assert.Equal(DocumentStatus.Active, _env.Server.DocByPath("Детали/Вал.tcprt").Status);
+
+        // Чертёж — никто не ссылается: удаляется, пропадает из дерева.
+        var drawing = _env.Server.DocByPath("Чертежи/Корпус.tcdrw");
+        await SelectAsync(vm, Node(vm, "АБВ.001 СБ"));
+        var confirms = _env.Dialogs.Confirms.Count;
+        await RunAsync(vm, vm.DeleteCommand);
+        Assert.Contains("Отменить удаление нельзя", _env.Dialogs.Confirms[confirms].Message);
+        Assert.Equal(DocumentStatus.Deleted, drawing.Status);
+        Assert.DoesNotContain(vm.Tree.AllNodes(), n => n.DocumentId == drawing.Id);
+        Assert.False(File.Exists(Path.Combine(vm.Flow.WorkRoot!, "Чертежи", "Корпус.tcdrw")));
+
+        // Изделие верхнего уровня (на него никто не ссылается): удаляется, окно его закрывает, из закреплённых убирается.
+        var head = _env.Server.DocByPath("Изделие.tcasm");
+        s.Profile.Pin(head.Id, "АБВ.000", "Изделие");
+        await SelectAsync(vm, vm.Tree.Root!);
+        await RunAsync(vm, vm.DeleteCommand);
+        Assert.Equal(DocumentStatus.Deleted, head.Status);
+        Assert.Null(vm.Product);
+        Assert.Null(vm.Tree.Root);
+        Assert.DoesNotContain(vm.Tree.Roots, r => r.DocumentId == head.Id);
+        Assert.False(s.Profile.IsPinned(head.Id));
+        Assert.Contains("удалено", vm.EmptyText);
+    }
+
+    [Fact]
+    public async Task RemoveReference_AdminOnly_ReferenceGoneFromTree()
+    {
+        var src = _env.Path("src7");
+        TestCadWriter.Create(Path.Combine(src, "Вал.tcprt"));
+        var asm = TestCadWriter.Write(Path.Combine(src, "Узел.tcasm"), new TestCadDocument().Prop("Обозначение", "У.000")
+            .Ref(Path.Combine(src, "Вал.tcprt"), @"Q:\Старый\Монитор.tcasm"));
+        var admin = _env.Session("admin");
+        Guid head;
+        using (var report = await admin.Workspace.PrepareImportAsync(asm))
+        {
+            var r = await admin.Workspace.ExecuteImportAsync(report, _env.Project.Id, "Постановка", allowMissing: true);
+            Assert.True(r.Success, r.Message);
+            head = r.HeadDocumentId;
+        }
+
+        // Конструктор пункта не видит.
+        var designerVm = new ProductWindowViewModel(_env.Session("ivanov"));
+        _env.Dialogs.ChooseAnswers.Enqueue(0);
+        Assert.True(await designerVm.OpenProductAsync(new ProductRef(head)), _env.Dialogs.AllErrors);
+        await SelectAsync(designerVm, designerVm.Tree.AllNodes().Single(x => x.Type == NodeType.Unresolved));
+        Assert.DoesNotContain(NodeActionKind.RemoveReference, designerVm.Panel.MoreKinds);
+
+        var vm = new ProductWindowViewModel(admin);
+        _env.Dialogs.ChooseAnswers.Enqueue(0);
+        Assert.True(await vm.OpenProductAsync(new ProductRef(head)), _env.Dialogs.AllErrors);
+        await SelectAsync(vm, vm.Tree.AllNodes().Single(x => x.Type == NodeType.Unresolved));
+        Assert.Contains(NodeActionKind.RemoveReference, vm.Panel.MoreKinds);
+
+        var confirms = _env.Dialogs.Confirms.Count;
+        await RunAsync(vm, vm.RemoveReferenceCommand);
+
+        Assert.Empty(_env.Dialogs.Errors);
+        Assert.Contains("удалены компоненты", _env.Dialogs.Confirms[confirms].Message);
+        Assert.DoesNotContain(_env.Server.Doc(head).Latest.Refs, r => r.RefPath.EndsWith("Монитор.tcasm"));
+        Assert.Equal(2, _env.Server.Doc(head).Latest.Number);
+        Assert.DoesNotContain(vm.Tree.AllNodes(), x => x.Type == NodeType.Unresolved);
+    }
+
+    [Fact]
+    public async Task ProductStub_PreviewShowsRootFromItsFolder_WithoutOpening()
+    {
+        // Изделие открывалось раньше (в другом окне) — его папка в недавних.
+        var (s, first, head) = await OpenProductAsync();
+        var folder = first.Flow.WorkRoot!;
+
+        var vm = new ProductWindowViewModel(s);
+        await vm.StartAsync(null);
+        var stub = vm.Tree.Roots.Single(r => r.DocumentId == head);
+        Assert.True(stub.IsProductStub);
+        await SelectAsync(vm, stub);
+
+        Assert.Null(vm.Product); // не открыто
+        Assert.Null(stub.OpenablePath);
+        Assert.Equal(Path.Combine(folder, "Изделие.tcasm"), vm.Panel.Node!.PreviewPath);
     }
 
     [Fact]

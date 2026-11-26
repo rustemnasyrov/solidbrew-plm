@@ -17,7 +17,8 @@ public interface IDialogService
     /// <summary>Выбор одного из вариантов. Возвращает номер варианта или -1 (окно закрыто).</summary>
     int Choose(string title, string message, IReadOnlyList<string> options, IEnumerable<string>? details = null);
 
-    string? PickFile(string title, string filter, string? initialFolder = null);
+    /// <param name="fileName">Имя файла, подставленное в поле «Имя файла».</param>
+    string? PickFile(string title, string filter, string? initialFolder = null, string? fileName = null);
 
     string? PickFolder(string title, string? initialFolder = null);
 

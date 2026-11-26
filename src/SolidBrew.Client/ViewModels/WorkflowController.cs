@@ -1,6 +1,7 @@
 using System.Collections.ObjectModel;
 using CommunityToolkit.Mvvm.ComponentModel;
 using SolidBrew.Client.Infrastructure;
+using SolidBrew.Core.Cad;
 using SolidBrew.Workspace;
 
 namespace SolidBrew.Client.ViewModels;
@@ -325,6 +326,63 @@ public sealed partial class WorkflowController : ObservableObject
     }
 
     /// <summary>
+    /// Записать свойства CAD в файл документа и сдать новую версию (взятие и сдача — внутри операции, см.
+    /// <see cref="WorkspaceService.WritePropertiesAsync"/>). Если CAD преобразовал файл в версию новее рабочей — спросить.
+    /// </summary>
+    public Task<bool> WritePropertiesAsync(Guid documentId, IReadOnlyList<CadPropertyChange> changes) =>
+        WritePropertiesAsync(new[] { new PropertyWrite(documentId, changes) });
+
+    /// <summary>
+    /// Пакетная запись свойств (заполненных в карточках нескольких документов): одной операцией взять, записать в файлы,
+    /// сдать новыми версиями. <paramref name="confirmLines"/> — если задан, сначала спросить подтверждение с этим перечнем.
+    /// </summary>
+    public async Task<bool> WritePropertiesAsync(IReadOnlyList<PropertyWrite> writes, IReadOnlyList<string>? confirmLines = null)
+    {
+        const string title = "Записать свойства";
+        if (writes.Count == 0 || writes.All(w => w.Changes.Count == 0)) return true;
+        if (!EnsureCanModify(title)) return false;
+        var root = RequireWorkspace(title);
+        if (root == null) return false;
+        var docs = writes.Select(w => w.DocumentId).Distinct().Count();
+        if (confirmLines != null && !Dialogs.Confirm("Сдать",
+                $"Записать заполненные свойства в файлы ({docs}) и сдать их новыми версиями? Документы будут взяты в работу и сданы автоматически.",
+                "Записать и сдать", "Отмена", confirmLines))
+            return false;
+        var ws = Workspace;
+        var outcome = await Busy.RunAsync("Запись свойств", (p, ct) => ws.WritePropertiesAsync(root, writes, null, false, p, ct));
+        if (outcome.Ok && outcome.Value is { Success: false, NeedsNewerCadConfirmation: true } first)
+        {
+            if (!Dialogs.Confirm("Версия CAD новее рабочей",
+                    first.Message + " Коллеги с рабочей версией CAD не смогут открыть файл.",
+                    "Записать и сдать", "Отмена", first.Problems.Select(p => p.Message)))
+            {
+                RaiseChanged();
+                return false;
+            }
+            outcome = await Busy.RunAsync("Запись свойств", (p, ct) => ws.WritePropertiesAsync(root, writes, null, true, p, ct));
+        }
+        if (!outcome.Ok)
+        {
+            RaiseChanged();
+            return false;
+        }
+        var r = outcome.Value!;
+        if (!r.Success)
+        {
+            Dialogs.ShowError(title, ErrorText.FromProblems(r.Message, r.Problems));
+            RaiseChanged();
+            return false;
+        }
+        Busy.Done(r.Message);
+        Notices?.Invoke(this, new[] { r.Message });
+        RaiseChanged();
+        return true;
+    }
+
+    /// <summary>Файл «по ссылке» для сдачи: чья ссылка (родитель), путь в ней и найденный файл.</summary>
+    public sealed record LinkedFile(Guid ParentId, Guid ProjectId, string ParentRelPath, string ParentLabel, string RefPath, string LinkPath);
+
+    /// <summary>
     /// Файл, оставленный ссылкой (не учтён в PDM): поставить на учёт (рядом с родителем в проекте; уже учтённое содержимое
     /// берётся из хранилища), привязать к нему ссылку родителя (новая версия родителя) и разложить в рабочую папку.
     /// Дальше это обычный документ: взять в работу, сдать, обновить.
@@ -338,7 +396,7 @@ public sealed partial class WorkflowController : ObservableObject
 
         var slash = parentRelPath.LastIndexOf('/');
         var prefix = slash > 0 ? parentRelPath.Substring(0, slash) : string.Empty;
-        var vm = new ImportViewModel(_session, projectId, new ImportPreset(linkPath, prefix, parentLabel));
+        var vm = new ImportViewModel(_session, projectId, new ImportPreset(linkPath, prefix, parentLabel, refPath));
         if (Dialogs.ShowDialog(vm) != true || vm.Result is not { Success: true } imported) return false;
 
         var ws = Workspace;
@@ -364,6 +422,149 @@ public sealed partial class WorkflowController : ObservableObject
         // Разложить: родитель без правок — новой версией (с переписанными ссылками); с правками — только новый документ.
         await UpdateToLatestAsync(bind.ParentModifiedLocally ? new[] { imported.HeadDocumentId } : new[] { parentId });
         return true;
+    }
+
+    /// <summary>
+    /// Несколько файлов «по ссылке» (выделены в дереве) — сдать в хранилище разом, без окна постановки на каждый:
+    /// каждый ставится на учёт рядом со своим родителем (если отчёт без вопросов — иначе он пропускается с объяснением),
+    /// затем ссылки каждого родителя привязываются одной новой версией, и всё раскладывается в рабочую папку.
+    /// </summary>
+    public async Task<bool> RegisterLinkedManyAsync(IReadOnlyList<LinkedFile> files)
+    {
+        const string title = "Сдать в хранилище";
+        if (files.Count == 0) return false;
+        if (files.Count == 1)
+        {
+            var f = files[0];
+            return await RegisterLinkedAsync(f.ParentId, f.ProjectId, f.ParentRelPath, f.ParentLabel, f.RefPath, f.LinkPath);
+        }
+        if (!EnsureCanModify(title)) return false;
+        var root = RequireWorkspace(title);
+        if (root == null) return false;
+        if (!Dialogs.Confirm(title, $"Поставить на учёт {files.Count} файлов по ссылке и привязать к ним ссылки сборок?",
+                "Сдать", "Отмена", files.Select(f => $"{Path.GetFileName(f.LinkPath)} — {f.LinkPath}")))
+            return false;
+
+        var ws = Workspace;
+        var failures = new List<string>();
+        var imported = new List<(LinkedFile File, Guid Id, int Version)>();
+        var reports = new List<(LinkedFile File, ImportReport Report)>();
+        try
+        {
+            // 1. Прочитать все файлы. Ссылки, где найден ровно один файл (перенос папки, совпадение по имени, вне папок),
+            //    не повод сдавать файл отдельно: они подтверждаются одним окном на всю пакетную сдачу.
+            var toConfirm = new List<(LinkedFile File, ImportReport Report, List<ImportReference> Refs)>();
+            foreach (var f in files)
+            {
+                var slash = f.ParentRelPath.LastIndexOf('/');
+                var options = new ImportOptions
+                {
+                    RelPathPrefix = slash > 0 ? f.ParentRelPath.Substring(0, slash) : string.Empty,
+                    AllowExistingHead = true,
+                    HeadSavedPath = f.RefPath,
+                };
+                var prepared = await Busy.RunAsync($"Чтение «{Path.GetFileName(f.LinkPath)}»", (p, ct) => ws.PrepareImportAsync(f.LinkPath, new List<string>(), p, ct, options));
+                if (!prepared.Ok) return false; // отмена или ошибка — уже показаны
+                var report = prepared.Value!;
+                reports.Add((f, report));
+                if (report.CanExecute(false)) continue;
+                var accepted = report.AcceptConfirmable();
+                if (accepted.Count > 0 && report.CanExecute(false))
+                {
+                    toConfirm.Add((f, report, accepted));
+                    continue;
+                }
+                foreach (var r in accepted) r.Accept = false;
+                report.Recompute();
+                failures.Add($"«{Path.GetFileName(f.LinkPath)}»: нужны решения по ссылкам — сдайте его отдельно. " +
+                             string.Join(" ", report.Problems.Where(p => p.IsBlocking).Select(p => p.Message).Take(2)));
+                reports.Remove((f, report));
+                report.Dispose();
+            }
+
+            // 2. Одно подтверждение на все найденные не по сохранённому пути ссылки.
+            if (toConfirm.Count > 0)
+            {
+                var details = toConfirm.SelectMany(x => x.Refs.Select(r => $"«{Path.GetFileName(r.SourceDocument)}» → «{r.FileName}»: {r.DecisionText}"))
+                    .Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+                var ok = Dialogs.Confirm(title,
+                    $"Ссылки {toConfirm.Count} из {files.Count} файлов найдены не по сохранённому пути. PDM не принимает такие файлы сама — " +
+                    "проверьте, что найдены нужные файлы. Они будут поставлены на учёт вместе с файлами по ссылке.",
+                    "Подтвердить и сдать", "Пропустить эти файлы", details);
+                if (!ok)
+                {
+                    foreach (var x in toConfirm)
+                    {
+                        failures.Add($"«{Path.GetFileName(x.File.LinkPath)}»: ссылки не подтверждены — пропущен.");
+                        reports.Remove((x.File, x.Report));
+                        x.Report.Dispose();
+                    }
+                }
+            }
+
+            // 3. Постановка по очереди. Общий компонент (например, исходная модель нескольких деталей) загружается первой
+            //    постановкой, следующие берут его из хранилища.
+            bool? acceptNewer = null;
+            for (var i = 0; i < reports.Count; i++)
+            {
+                var (f, report) = reports[i];
+                if (i > 0)
+                {
+                    if (!await Busy.RunAsync("Поиск уже учтённых файлов", (_, ct) => ws.RefreshExistingAsync(report, ct))) return false;
+                }
+                if (report.HasNewerCadVersion)
+                {
+                    acceptNewer ??= Dialogs.Confirm("Версия CAD новее рабочей",
+                        "Некоторые файлы сохранены в версии CAD новее рабочей версии предприятия. Коллеги с рабочей версией не смогут их открыть. Всё равно поставить на учёт?",
+                        "Поставить на учёт", "Пропустить такие");
+                    if (acceptNewer != true)
+                    {
+                        failures.Add($"«{Path.GetFileName(f.LinkPath)}»: версия CAD новее рабочей — пропущен.");
+                        continue;
+                    }
+                }
+                var newer = acceptNewer == true;
+                var done = await Busy.RunAsync($"Постановка на учёт «{Path.GetFileName(f.LinkPath)}»", (p, ct) => ws.ExecuteImportAsync(report, f.ProjectId, null, false, newer, p, ct));
+                if (!done.Ok) return false;
+                if (!done.Value!.Success)
+                {
+                    failures.Add($"«{Path.GetFileName(f.LinkPath)}»: {done.Value.Message}");
+                    continue;
+                }
+                imported.Add((f, done.Value.HeadDocumentId, done.Value.HeadVersion));
+            }
+        }
+        finally
+        {
+            // Временные копии непоставленных (успешная постановка удаляет их сама; повторное удаление безвредно).
+            foreach (var (_, report) in reports) report.Dispose();
+        }
+
+        var update = new HashSet<Guid>();
+        var messages = new List<string>();
+        foreach (var group in imported.GroupBy(i => i.File.ParentId))
+        {
+            var bindings = group.Select(i => new ReferenceBinding(i.File.RefPath, i.Id, i.Version)).ToList();
+            var label = group.First().File.ParentLabel;
+            var outcome = await Busy.RunAsync("Привязка ссылок", (_, ct) => ws.BindReferencesAsync(root, group.Key, bindings, ct));
+            if (!outcome.Ok) break;
+            var bind = outcome.Value!;
+            if (!bind.Success)
+            {
+                failures.Add($"Файлы поставлены на учёт, но ссылки {label} не привязаны: {bind.Message} Повторите «Сдать в хранилище» — загружать заново не придётся.");
+                continue;
+            }
+            messages.Add(bind.Message);
+            if (bind.ParentModifiedLocally) update.UnionWith(group.Select(i => i.Id));
+            else update.Add(group.Key);
+        }
+
+        if (failures.Count > 0)
+            Dialogs.ShowError(title, new ErrorInfo($"Сдано в хранилище {imported.Count} из {files.Count}.", failures));
+        if (messages.Count > 0) Notices?.Invoke(this, messages);
+        if (update.Count > 0) await UpdateToLatestAsync(update.ToList());
+        else RaiseChanged();
+        return failures.Count == 0;
     }
 
     // ------------------------------------------------------------------ правки в других рабочих папках
@@ -434,6 +635,91 @@ public sealed partial class WorkflowController : ObservableObject
         var outcome = await Busy.RunAsync("Не используется", (_, ct) => ws.MarkUnusedAsync(documentId, unused, ct));
         if (!outcome.Ok) return false;
         Busy.Done(unused ? $"{label} помечен как «не используется»." : $"{label} снова используется.");
+        RaiseChanged();
+        return true;
+    }
+
+    /// <summary>
+    /// «Удалить…» (только администратор): документ пропадает из PDM — дерева, поиска, списков; история версий остаётся в журнале.
+    /// Сервер отказывает, если на документ ссылаются опубликованные версии других документов (тогда — «не используется»).
+    /// </summary>
+    public async Task<bool> DeleteDocumentAsync(Guid documentId, string label)
+    {
+        const string title = "Удалить";
+        if (!_session.IsAdmin)
+        {
+            Dialogs.ShowError(title, new ErrorInfo("Удалять документы может только администратор PDM.", new List<string>()));
+            return false;
+        }
+        if (!Dialogs.Confirm(title,
+                $"Удалить {label} из PDM? Документ пропадёт из дерева, поиска и списков, его путь в проекте освободится. " +
+                "История версий останется в журнале. Отменить удаление нельзя.",
+                "Удалить", "Отмена"))
+            return false;
+        var ws = Workspace;
+        var root = WorkRoot;
+        var outcome = await Busy.RunAsync("Удаление", (_, ct) => ws.DeleteDocumentAsync(root, documentId, ct));
+        if (!outcome.Ok) return false;
+        var r = outcome.Value!;
+        if (!r.Success)
+        {
+            Dialogs.ShowError(title, ErrorText.FromProblems(r.Message, r.Problems.Where(p => p.Message != r.Message)));
+            return false;
+        }
+        Busy.Done(r.Message);
+        var infos = r.Problems.Select(p => p.Message).ToList();
+        if (infos.Count > 0) Notices?.Invoke(this, infos);
+        RaiseChanged();
+        return true;
+    }
+
+    /// <summary>
+    /// «Удалить ссылку…» (только администратор): убрать из родителя ссылки на файлы, не учтённые в PDM, и сдать его новую версию
+    /// (<see cref="WorkspaceService.RemoveReferencesAsync"/>). <paramref name="parentIsPart"/> — у детали разрываются внешние ссылки.
+    /// </summary>
+    public async Task<bool> RemoveReferencesAsync(Guid parentId, string parentLabel, bool parentIsPart, IReadOnlyList<string> refPaths)
+    {
+        const string title = "Удалить ссылку";
+        if (refPaths.Count == 0) return false;
+        if (!_session.IsAdmin)
+        {
+            Dialogs.ShowError(title, new ErrorInfo("Убирать ссылки может только администратор PDM.", new List<string>()));
+            return false;
+        }
+        var root = RequireWorkspace(title);
+        if (root == null) return false;
+        var what = parentIsPart
+            ? $"У детали {parentLabel} будут разорваны внешние ссылки (SOLIDWORKS разрывает их все сразу): элементы, построенные в контексте этих сборок, сохранят геометрию, но перестанут обновляться. PDM больше не будет показывать эти ссылки."
+            : $"Из сборки {parentLabel} будут удалены компоненты с этими файлами.";
+        if (!Dialogs.Confirm(title, what + " Документ будет взят в работу, изменён в SOLIDWORKS и сдан новой версией.", "Удалить ссылки", "Отмена",
+                refPaths.Select(p => Path.GetFileName(p.Replace('/', '\\')) + " — " + p)))
+            return false;
+        var ws = Workspace;
+        var outcome = await Busy.RunAsync("Удаление ссылок", (p, ct) => ws.RemoveReferencesAsync(root, parentId, refPaths, null, false, p, ct));
+        if (outcome.Ok && outcome.Value is { Success: false, NeedsNewerCadConfirmation: true } first)
+        {
+            if (!Dialogs.Confirm("Версия CAD новее рабочей", first.Message + " Коллеги с рабочей версией CAD не смогут открыть файл.",
+                    "Сохранить и сдать", "Отмена", first.Problems.Select(p => p.Message)))
+            {
+                RaiseChanged();
+                return false;
+            }
+            outcome = await Busy.RunAsync("Удаление ссылок", (p, ct) => ws.RemoveReferencesAsync(root, parentId, refPaths, null, true, p, ct));
+        }
+        if (!outcome.Ok)
+        {
+            RaiseChanged();
+            return false;
+        }
+        var r = outcome.Value!;
+        if (!r.Success)
+        {
+            Dialogs.ShowError(title, ErrorText.FromProblems(r.Message, r.Problems.Where(p => !r.Message.Contains(p.Message, StringComparison.Ordinal))));
+            RaiseChanged();
+            return false;
+        }
+        Busy.Done(r.Message);
+        Notices?.Invoke(this, new[] { r.Message });
         RaiseChanged();
         return true;
     }

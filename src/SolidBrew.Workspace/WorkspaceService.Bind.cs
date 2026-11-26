@@ -4,6 +4,9 @@ using SolidBrew.Core.Paths;
 
 namespace SolidBrew.Workspace;
 
+/// <summary>Привязка одной ссылки родителя (путь, как сохранён в родителе) к документу PDM.</summary>
+public sealed record ReferenceBinding(string RefPath, Guid ChildId, int ChildVersion);
+
 /// <summary>Итог привязки ссылки «по ссылке» к документу PDM.</summary>
 public sealed class BindReferenceResult : OperationResult
 {
@@ -26,9 +29,19 @@ public sealed partial class WorkspaceService
     /// (<see cref="BindReferenceResult.ParentModifiedLocally"/>) — там версия обновляется сразу, чтобы дальнейшая сдача шла от неё.
     /// Положить файлы в папку и переписать ссылки — «Обновить до последней» (родителя или, при локальных правках, привязанного документа).
     /// </summary>
-    public async Task<BindReferenceResult> BindReferenceAsync(string workRoot, Guid parentId, string refPath, Guid childId, int childVersion,
+    public Task<BindReferenceResult> BindReferenceAsync(string workRoot, Guid parentId, string refPath, Guid childId, int childVersion,
+        CancellationToken ct = default) =>
+        BindReferencesAsync(workRoot, parentId, new[] { new ReferenceBinding(refPath, childId, childVersion) }, ct);
+
+    /// <summary>
+    /// То же для нескольких ссылок одного родителя сразу — одна новая версия родителя со всеми привязками
+    /// (по одной привязке за раз вторая упёрлась бы в «в рабочей папке не последняя версия»).
+    /// </summary>
+    public async Task<BindReferenceResult> BindReferencesAsync(string workRoot, Guid parentId, IReadOnlyList<ReferenceBinding> bindings,
         CancellationToken ct = default)
     {
+        if (bindings.Count == 0) throw new ArgumentException("Нет ссылок для привязки.", nameof(bindings));
+        var refPath = bindings[0].RefPath;
         var root = Root(workRoot);
         var state = WorkspaceState.Load(root);
         var result = new BindReferenceResult { ParentDocumentId = parentId };
@@ -43,11 +56,17 @@ public sealed partial class WorkspaceService
         }
         var version = detail.Versions.FirstOrDefault(v => v.Number == baseVersion)
                       ?? throw new WorkspaceException($"Сервер не вернул версию v{baseVersion} документа {label}.");
-        var matches = version.References.Where(r => r.ChildDocumentId == null && SameSavedPath(r.RefPath, refPath)).ToList();
-        if (matches.Count == 0)
+        // Ссылка версии → привязка, которая к ней относится.
+        var bound = new Dictionary<VersionRefDto, ReferenceBinding>();
+        foreach (var b in bindings)
         {
-            result.Message = $"В {label} v{baseVersion} нет ссылки на файл, не учтённый в PDM: «{refPath}». Обновите дерево изделия.";
-            return result;
+            var found = version.References.Where(r => r.ChildDocumentId == null && SameSavedPath(r.RefPath, b.RefPath)).ToList();
+            if (found.Count == 0)
+            {
+                result.Message = $"В {label} v{baseVersion} нет ссылки на файл, не учтённый в PDM: «{b.RefPath}». Обновите дерево изделия.";
+                return result;
+            }
+            foreach (var r in found) bound[r] = b;
         }
 
         var me = await GetMeAsync(ct).ConfigureAwait(false);
@@ -85,8 +104,8 @@ public sealed partial class WorkspaceService
         };
         foreach (var r in version.References)
         {
-            if (matches.Contains(r))
-                item.References.Add(new CheckinReference { RefPath = r.RefPath, DocumentId = childId, Version = childVersion });
+            if (bound.TryGetValue(r, out var b))
+                item.References.Add(new CheckinReference { RefPath = r.RefPath, DocumentId = b.ChildId, Version = b.ChildVersion });
             else if (r.ChildDocumentId != null)
                 item.References.Add(new CheckinReference { RefPath = r.RefPath, DocumentId = r.ChildDocumentId, Version = r.ChildVersion });
             else
@@ -95,7 +114,7 @@ public sealed partial class WorkspaceService
         var request = new CheckinRequest
         {
             ProjectId = detail.Document.ProjectId,
-            Comment = $"Поставлен на учёт и привязан «{Texts.FileNameOf(refPath)}»",
+            Comment = bindings.Count == 1 ? $"Поставлен на учёт и привязан «{Texts.FileNameOf(refPath)}»" : $"Поставлены на учёт и привязаны: {string.Join(", ", bindings.Select(b => "«" + Texts.FileNameOf(b.RefPath) + "»"))}",
             KeepLocks = lockedByMe,
             AllowUnresolvedReferences = item.References.Any(r => r.DocumentId == null && r.TempKey == null),
             AcceptNewerCadVersion = true, // байты те же, что у опубликованной версии
@@ -124,11 +143,13 @@ public sealed partial class WorkspaceService
         {
             // Байты v{новая} совпадают с v{baseVersion}: локальные правки остаются правками относительно новой версии.
             entry.Version = result.ParentVersion;
-            entry.Deps.Add(new WorkspaceDependency { DocumentId = childId, Version = childVersion, RefPath = matches[0].RefPath });
+            foreach (var (r, b) in bound) entry.Deps.Add(new WorkspaceDependency { DocumentId = b.ChildId, Version = b.ChildVersion, RefPath = r.RefPath });
             state.Save(root);
         }
         result.Success = true;
-        result.Message = $"Ссылка на «{Texts.FileNameOf(refPath)}» привязана к документу PDM: {label} v{result.ParentVersion}.";
+        result.Message = bindings.Count == 1
+            ? $"Ссылка на «{Texts.FileNameOf(refPath)}» привязана к документу PDM: {label} v{result.ParentVersion}."
+            : $"Ссылки ({bindings.Count}) привязаны к документам PDM: {label} v{result.ParentVersion}.";
         return result;
     }
 }

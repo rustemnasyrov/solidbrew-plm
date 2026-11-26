@@ -115,6 +115,7 @@ public sealed class JournalRow
         JournalActions.Unlock => "отменить взятие",
         JournalActions.ForceUnlock => "снятие блокировки администратором",
         JournalActions.MarkUnused => "не используется",
+        JournalActions.Deleted => "удалён администратором",
         JournalActions.Export => "выгрузка комплекта",
         JournalActions.UserCreated => "создан пользователь",
         JournalActions.UserUpdated => "изменён пользователь",

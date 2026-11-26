@@ -374,6 +374,7 @@ public sealed partial class CliApp
         JournalActions.Unlock => "отмена взятия",
         JournalActions.ForceUnlock => "блокировка снята администратором",
         JournalActions.MarkUnused => "пометка «не используется»",
+        JournalActions.Deleted => "удалён администратором",
         JournalActions.Export => "выгрузка",
         JournalActions.UserCreated => "пользователь создан",
         JournalActions.UserUpdated => "пользователь изменён",
