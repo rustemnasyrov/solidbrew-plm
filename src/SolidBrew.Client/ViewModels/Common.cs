@@ -182,6 +182,7 @@ public sealed class ProblemItem
         Severity = p.Severity;
         Message = p.Message;
         RelPath = p.RelPath;
+        Code = p.Code;
     }
 
     public ProblemItem(ProblemSeverity severity, string message)
@@ -193,6 +194,8 @@ public sealed class ProblemItem
     public ProblemSeverity Severity { get; }
     public string Message { get; }
     public string? RelPath { get; }
+    /// <summary>Код проблемы (<see cref="LocalProblemCodes"/>); у проблем без кода — пусто.</summary>
+    public string Code { get; } = string.Empty;
     public bool IsBlocking => Severity == ProblemSeverity.Error;
     public bool IsWarning => Severity == ProblemSeverity.Warning;
 

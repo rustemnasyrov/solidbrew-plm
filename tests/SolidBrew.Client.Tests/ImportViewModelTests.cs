@@ -1,5 +1,6 @@
 using SolidBrew.Adapters.TestCad;
 using SolidBrew.Client.ViewModels;
+using SolidBrew.Core.Contracts;
 using SolidBrew.Workspace;
 
 namespace SolidBrew.Client.Tests;
@@ -53,6 +54,7 @@ public sealed class ImportViewModelTests : IDisposable
         nameRow.Accept = true;
         outsideRow.Accept = true;
         ambRow.Chosen = ambRow.Candidates.First(c => c.Contains(@"\B\"));
+        await vm.PropertiesTask; // свойства новых документов дочитываются в фоне
         var report = vm.Report!;
         var refs = report.Head.References.ToDictionary(r => r.FileName);
         Assert.True(refs["Шайба.tcprt"].Accept);
@@ -104,6 +106,7 @@ public sealed class ImportViewModelTests : IDisposable
         Assert.False(vm.ImportCommand.CanExecute(null));
 
         row.Accept = true;
+        await vm.PropertiesTask;
         Assert.True(vm.ImportCommand.CanExecute(null));
         Assert.Contains(vm.Documents, d => d.IsIncluded && d.RelPath == "Models/Модель.tcprt");
         Assert.Contains(vm.Documents, d => d.IsIncluded && d.RelPath == "Деталь.tcprt");
@@ -130,6 +133,7 @@ public sealed class ImportViewModelTests : IDisposable
         Assert.Single(vm.Documents, d => d.IsIncluded);
 
         row.Accept = true;
+        await vm.PropertiesTask;
         Assert.True(vm.ImportCommand.CanExecute(null));
         Assert.Equal(2, vm.Documents.Count(d => d.IsIncluded));
         Assert.Equal(ImportReferenceCategory.NameOnly, row.Reference.Category);
@@ -141,5 +145,109 @@ public sealed class ImportViewModelTests : IDisposable
         Assert.False(vm.DialogResult);
         Assert.Empty(_env.Server.Docs);
         Assert.False(Directory.Exists(staging));
+    }
+
+    [Fact]
+    public async Task BlockingReasons_NextToButton_ExplainAndNavigate_RereadOnlyFailedFile()
+    {
+        var cad = (TestCadAdapter)_env.Registry.Get(TestCadAdapter.Id)!;
+        var src = _env.Path("src");
+        var part = TestCadWriter.Create(Path.Combine(src, "Детали", "Деталь.tcprt"));
+        var head = TestCadWriter.Create(Path.Combine(src, "Сборка.tcasm"), new[] { part, @"Q:\Старый\Нет1.tcprt", @"Q:\Старый\Нет2.tcprt" });
+        // В CAD открыт одноимённый документ из другой папки — свойства детали не прочитаются.
+        var other = TestCadWriter.Create(_env.Path("Другое", "Деталь.tcprt"));
+        cad.OpenDocuments.Add(other);
+        var s = _env.Session("ivanov");
+        var vm = new ImportViewModel(s, _env.Project.Id);
+        await vm.InitializeAsync();
+        Assert.Contains(vm.BlockingReasons, r => r.Text == "отчёт не построен");
+        vm.HeadFile = head;
+        await vm.AnalyzeCommand.ExecuteAsync(null);
+        await vm.PropertiesTask;
+
+        Assert.False(vm.ImportCommand.CanExecute(null));
+        Assert.True(vm.HasBlockingReasons);
+        Assert.Equal(new[] { ImportBlockingCodes.SameNameOpen, LocalProblemCodes.MissingReference }, vm.BlockingReasons.Select(r => r.Code));
+        var readError = vm.BlockingReasons[0];
+        Assert.Equal($"1 файл не прочитан (в TestCad открыт одноимённый документ из другой папки: {other})", readError.Text);
+        Assert.Equal("закройте его в TestCad и нажмите «Прочитать заново» или снимите у него «Загружать»", readError.Action);
+        Assert.True(readError.CanReread);
+        var missing = vm.BlockingReasons[1];
+        Assert.Equal("2 отсутствующие ссылки", missing.Text);
+        Assert.Contains("отметьте «Разрешить…»", missing.Action);
+        Assert.False(missing.CanReread);
+        // Ошибка чтения — первой в общем списке, выше отсутствующих ссылок; вкладки с причинами помечены.
+        Assert.Equal(LocalProblemCodes.ReadError, vm.Problems[0].Code);
+        Assert.True(vm.DocumentsBlocked);
+        Assert.True(vm.MissingBlocked);
+        Assert.False(vm.AmbiguousBlocked);
+
+        // Щелчок по причине — её вкладка и строка; повторный — следующая строка.
+        vm.GoToReasonCommand.Execute(missing);
+        Assert.Equal((int)ImportReportTab.Missing, vm.SelectedTabIndex);
+        Assert.Equal("Нет1.tcprt", vm.SelectedMissing?.FileName);
+        vm.GoToReasonCommand.Execute(missing);
+        Assert.Equal("Нет2.tcprt", vm.SelectedMissing?.FileName);
+        vm.GoToReasonCommand.Execute(readError);
+        Assert.Equal((int)ImportReportTab.Documents, vm.SelectedTabIndex);
+        Assert.Equal("Деталь.tcprt", vm.SelectedDocument?.FileName);
+
+        // Без проекта — ещё одна причина, переход открывает список проектов.
+        vm.SelectedProject = null;
+        var noProject = Assert.Single(vm.BlockingReasons, r => r.Code == ImportBlockingCodes.NoProject);
+        Assert.Equal("не выбран проект — выберите проект", noProject.ToString());
+        vm.GoToReasonCommand.Execute(noProject);
+        Assert.True(vm.IsProjectDropDownOpen);
+        vm.SelectedProject = vm.Projects[0];
+
+        // «Разрешить…» снимает отсутствующие ссылки, но не ошибку чтения.
+        vm.AllowMissing = true;
+        Assert.Equal(ImportBlockingCodes.SameNameOpen, Assert.Single(vm.BlockingReasons).Code);
+        Assert.False(vm.ImportCommand.CanExecute(null));
+
+        // Закрыли документ в CAD — «Прочитать заново» перечитывает только эту деталь.
+        cad.OpenDocuments.Remove(other);
+        var reads = cad.PropertiesReads.Count;
+        await vm.RereadCommand.ExecuteAsync(vm.BlockingReasons[0]);
+        await vm.PropertiesTask;
+        Assert.Equal(reads + 1, cad.PropertiesReads.Count);
+        Assert.Empty(vm.BlockingReasons);
+        Assert.False(vm.HasBlockingReasons);
+        Assert.True(vm.ImportCommand.CanExecute(null));
+        vm.CancelCommand.Execute(null);
+        vm.OnClosed();
+    }
+
+    [Fact]
+    public async Task Properties_ReadInBackground_ImportWaits_UncheckedNotRead()
+    {
+        var cad = (TestCadAdapter)_env.Registry.Get(TestCadAdapter.Id)!;
+        var src = _env.CreateSourceProject();
+        cad.PropertiesDelay = TimeSpan.FromMilliseconds(150);
+        var s = _env.Session("ivanov");
+        var vm = new ImportViewModel(s, _env.Project.Id, headFile: Path.Combine(src, "Изделие.tcasm"));
+        await vm.InitializeAsync(); // отчёт строится сразу, свойства — в фоне
+
+        // Отчёт уже есть, а свойства ещё читаются: кнопка ждёт, причина — ход чтения.
+        Assert.NotNull(vm.Report);
+        Assert.False(vm.ImportCommand.CanExecute(null));
+        var pending = Assert.Single(vm.BlockingReasons);
+        Assert.Equal(ImportBlockingCodes.PropertiesPending, pending.Code);
+        Assert.StartsWith("Свойства 1 из", pending.Text);
+        Assert.Equal("дождитесь окончания чтения", pending.Action);
+        Assert.Equal("…", vm.Documents.First(d => d.Document.IsHead).Designation);
+
+        // Пока читается головной, снимаем «Загружать» у вала — его свойства читать не нужно.
+        vm.Documents.Single(d => d.FileName == "Вал.tcprt").Include = false;
+        await vm.PropertiesTask;
+
+        Assert.DoesNotContain(cad.PropertiesReads, p => Path.GetFileName(p) == "Вал.tcprt");
+        Assert.Equal(vm.Report!.NewDocuments.Count(), cad.PropertiesReads.Count); // все загружаемые, кроме вала
+        Assert.Equal(3, cad.PropertiesReads.Count);
+        Assert.Equal("АБВ.000", vm.Documents.First(d => d.Document.IsHead).Designation);
+        Assert.Empty(vm.BlockingReasons);
+        Assert.True(vm.ImportCommand.CanExecute(null));
+        vm.CancelCommand.Execute(null);
+        vm.OnClosed();
     }
 }

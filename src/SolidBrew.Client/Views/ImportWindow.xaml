@@ -2,17 +2,52 @@
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:v="clr-namespace:SolidBrew.Client.Views"
+        xmlns:inf="clr-namespace:SolidBrew.Client.Infrastructure"
+        x:Name="Root"
         Style="{StaticResource AppWindow}"
         Width="1160" Height="800" MinWidth="820" MinHeight="560" ShowInTaskbar="False">
     <DockPanel>
         <Border DockPanel.Dock="Bottom" Style="{StaticResource Toolbar}" BorderThickness="0,1,0,0">
             <DockPanel>
-                <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" Margin="12,0,0,0">
+                <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" Margin="12,0,0,0" VerticalAlignment="Bottom">
                     <Button Style="{StaticResource PrimaryButton}" Tag="&#xE898;" Content="Поставить на учёт" Command="{Binding ImportCommand}"
                             ToolTip="Одной операцией поставить на учёт все документы комплекта; исходники не меняются" />
                     <Button Style="{StaticResource PlainButton}" Content="Закрыть" Command="{Binding CancelCommand}" IsCancel="True" />
                 </StackPanel>
-                <v:BusyBar DataContext="{Binding Busy}" />
+                <StackPanel>
+                    <!-- Что мешает поставить на учёт: каждая причина ведёт на свою вкладку и строку. -->
+                    <Border Background="{StaticResource NoticeBrush}" Padding="8,4" Margin="0,0,0,6"
+                            Visibility="{Binding HasBlockingReasons, Converter={StaticResource BoolVis}}">
+                        <DockPanel>
+                            <TextBlock DockPanel.Dock="Left" Style="{StaticResource Icon}" Text="&#xE7BA;" Foreground="{StaticResource ErrorBrush}"
+                                       Margin="0,2,8,0" VerticalAlignment="Top" />
+                            <StackPanel>
+                                <TextBlock Text="Нельзя поставить на учёт:" FontWeight="SemiBold" Foreground="{StaticResource ErrorBrush}" />
+                                <ItemsControl ItemsSource="{Binding BlockingReasons}" AutomationProperties.Name="Нельзя поставить на учёт">
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate>
+                                            <DockPanel Margin="0,2,0,0">
+                                                <Button DockPanel.Dock="Right" Style="{StaticResource PlainButton}" Content="Прочитать заново" Margin="8,0,0,0"
+                                                        VerticalAlignment="Top" Padding="8,1"
+                                                        Command="{Binding DataContext.RereadCommand, ElementName=Root}" CommandParameter="{Binding}"
+                                                        Visibility="{Binding CanReread, Converter={StaticResource BoolVis}}"
+                                                        ToolTip="Прочитать заново только эти файлы; остальной отчёт и решения сохраняются" />
+                                                <TextBlock TextWrapping="Wrap">
+                                                    <Hyperlink Command="{Binding DataContext.GoToReasonCommand, ElementName=Root}" CommandParameter="{Binding}"
+                                                               ToolTip="Показать на вкладке (щелчок ещё раз — следующая строка)">
+                                                        <Run Text="{Binding Text, Mode=OneWay}" />
+                                                    </Hyperlink>
+                                                    <Run Text=" — " /><Run Text="{Binding Action, Mode=OneWay}" />
+                                                </TextBlock>
+                                            </DockPanel>
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
+                            </StackPanel>
+                        </DockPanel>
+                    </Border>
+                    <v:BusyBar DataContext="{Binding Busy}" />
+                </StackPanel>
             </DockPanel>
         </Border>
 
@@ -30,7 +65,8 @@
                     <RowDefinition Height="Auto" />
                 </Grid.RowDefinitions>
                 <TextBlock Text="Проект" VerticalAlignment="Center" Margin="0,0,8,0" />
-                <ComboBox Grid.Column="1" ItemsSource="{Binding Projects}" SelectedItem="{Binding SelectedProject}" DisplayMemberPath="Name" AutomationProperties.Name="Проект">
+                <ComboBox Grid.Column="1" ItemsSource="{Binding Projects}" SelectedItem="{Binding SelectedProject}" DisplayMemberPath="Name" AutomationProperties.Name="Проект"
+                          IsDropDownOpen="{Binding IsProjectDropDownOpen}">
                     <ComboBox.ItemContainerStyle>
                         <Style TargetType="ComboBoxItem">
                             <Setter Property="AutomationProperties.Name" Value="{Binding Name}" />
@@ -84,9 +120,17 @@
                 </ScrollViewer>
             </Border>
 
-            <TabControl Grid.Row="3">
-                <TabItem Header="{Binding DocumentsHeader}">
-                    <DataGrid ItemsSource="{Binding Documents}">
+            <TabControl Grid.Row="3" SelectedIndex="{Binding SelectedTabIndex}">
+                <TabItem>
+                    <TabItem.Header>
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock Style="{StaticResource Icon}" Text="&#xE7BA;" Foreground="{StaticResource ErrorBrush}" Margin="0,0,4,0"
+                                       VerticalAlignment="Center" ToolTip="Здесь есть то, что мешает поставить на учёт"
+                                       Visibility="{Binding DocumentsBlocked, Converter={StaticResource BoolVis}}" />
+                            <TextBlock Text="{Binding DocumentsHeader}" />
+                        </StackPanel>
+                    </TabItem.Header>
+                    <DataGrid ItemsSource="{Binding Documents}" SelectedItem="{Binding SelectedDocument}" inf:ScrollSelection.IntoView="True">
                         <DataGrid.Columns>
                             <DataGridTemplateColumn Header="Загружать" Width="75">
                                 <DataGridTemplateColumn.CellTemplate>
@@ -109,7 +153,7 @@
                     </DataGrid>
                 </TabItem>
                 <TabItem Header="{Binding FoundHeader}">
-                    <DataGrid ItemsSource="{Binding Found}">
+                    <DataGrid ItemsSource="{Binding Found}" SelectedItem="{Binding SelectedFound}" inf:ScrollSelection.IntoView="True">
                         <DataGrid.Columns>
                             <DataGridTextColumn Header="Документ" Binding="{Binding SourceName}" Width="*" />
                             <DataGridTextColumn Header="Ссылка (как записана)" Binding="{Binding SavedPath}" Width="2*" />
@@ -117,11 +161,19 @@
                         </DataGrid.Columns>
                     </DataGrid>
                 </TabItem>
-                <TabItem Header="{Binding OutsideHeader}">
+                <TabItem>
+                    <TabItem.Header>
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock Style="{StaticResource Icon}" Text="&#xE7BA;" Foreground="{StaticResource ErrorBrush}" Margin="0,0,4,0"
+                                       VerticalAlignment="Center" ToolTip="Здесь есть то, что мешает поставить на учёт"
+                                       Visibility="{Binding OutsideBlocked, Converter={StaticResource BoolVis}}" />
+                            <TextBlock Text="{Binding OutsideHeader}" />
+                        </StackPanel>
+                    </TabItem.Header>
                     <DockPanel>
                         <TextBlock DockPanel.Dock="Top" Style="{StaticResource Muted}" Margin="4"
                                    Text="Файл есть по сохранённому пути, но вне указанных папок. Подтвердите, если это нужный файл, или добавьте его папку в поиск." />
-                        <DataGrid ItemsSource="{Binding Outside}">
+                        <DataGrid ItemsSource="{Binding Outside}" SelectedItem="{Binding SelectedOutside}" inf:ScrollSelection.IntoView="True">
                             <DataGrid.Columns>
                                 <DataGridTemplateColumn Header="Подтвердить" Width="90">
                                     <DataGridTemplateColumn.CellTemplate>
@@ -137,11 +189,19 @@
                         </DataGrid>
                     </DockPanel>
                 </TabItem>
-                <TabItem Header="{Binding NameOnlyHeader}">
+                <TabItem>
+                    <TabItem.Header>
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock Style="{StaticResource Icon}" Text="&#xE7BA;" Foreground="{StaticResource ErrorBrush}" Margin="0,0,4,0"
+                                       VerticalAlignment="Center" ToolTip="Здесь есть то, что мешает поставить на учёт"
+                                       Visibility="{Binding NameOnlyBlocked, Converter={StaticResource BoolVis}}" />
+                            <TextBlock Text="{Binding NameOnlyHeader}" />
+                        </StackPanel>
+                    </TabItem.Header>
                     <DockPanel>
                         <TextBlock DockPanel.Dock="Top" Style="{StaticResource Muted}" Margin="4"
                                    Text="По сохранённому пути файла нет; в папках поиска найден один файл с таким же именем. PDM не выбирает файл по имени сама — подтвердите, что это тот файл." />
-                        <DataGrid ItemsSource="{Binding NameOnly}">
+                        <DataGrid ItemsSource="{Binding NameOnly}" SelectedItem="{Binding SelectedNameOnly}" inf:ScrollSelection.IntoView="True">
                             <DataGrid.Columns>
                                 <DataGridTemplateColumn Header="Подтвердить" Width="90">
                                     <DataGridTemplateColumn.CellTemplate>
@@ -157,11 +217,19 @@
                         </DataGrid>
                     </DockPanel>
                 </TabItem>
-                <TabItem Header="{Binding RelocatedHeader}" Visibility="{Binding Relocated.Count, Converter={StaticResource CountVis}}">
+                <TabItem Visibility="{Binding Relocated.Count, Converter={StaticResource CountVis}}">
+                    <TabItem.Header>
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock Style="{StaticResource Icon}" Text="&#xE7BA;" Foreground="{StaticResource ErrorBrush}" Margin="0,0,4,0"
+                                       VerticalAlignment="Center" ToolTip="Здесь есть то, что мешает поставить на учёт"
+                                       Visibility="{Binding RelocatedBlocked, Converter={StaticResource BoolVis}}" />
+                            <TextBlock Text="{Binding RelocatedHeader}" />
+                        </StackPanel>
+                    </TabItem.Header>
                     <DockPanel>
                         <TextBlock DockPanel.Dock="Top" Style="{StaticResource Muted}" Margin="4" TextWrapping="Wrap"
                                    Text="По сохранённому пути файла нет, но документ перенесён (папку переименовали или переместили), и файл найден на том же месте относительно него, что и до переноса. PDM не принимает его сама — подтвердите, что это тот файл." />
-                        <DataGrid ItemsSource="{Binding Relocated}">
+                        <DataGrid ItemsSource="{Binding Relocated}" SelectedItem="{Binding SelectedRelocated}" inf:ScrollSelection.IntoView="True">
                             <DataGrid.Columns>
                                 <DataGridTemplateColumn Header="Подтвердить" Width="90">
                                     <DataGridTemplateColumn.CellTemplate>
@@ -178,11 +246,19 @@
                         </DataGrid>
                     </DockPanel>
                 </TabItem>
-                <TabItem Header="{Binding AmbiguousHeader}">
+                <TabItem>
+                    <TabItem.Header>
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock Style="{StaticResource Icon}" Text="&#xE7BA;" Foreground="{StaticResource ErrorBrush}" Margin="0,0,4,0"
+                                       VerticalAlignment="Center" ToolTip="Здесь есть то, что мешает поставить на учёт"
+                                       Visibility="{Binding AmbiguousBlocked, Converter={StaticResource BoolVis}}" />
+                            <TextBlock Text="{Binding AmbiguousHeader}" />
+                        </StackPanel>
+                    </TabItem.Header>
                     <DockPanel>
                         <TextBlock DockPanel.Dock="Top" Style="{StaticResource Muted}" Margin="4"
                                    Text="По сохранённому пути файла нет, а файлов с таким именем несколько. Выберите нужный вариант." />
-                        <DataGrid ItemsSource="{Binding Ambiguous}">
+                        <DataGrid ItemsSource="{Binding Ambiguous}" SelectedItem="{Binding SelectedAmbiguous}" inf:ScrollSelection.IntoView="True">
                             <DataGrid.Columns>
                                 <DataGridTextColumn Header="Документ" Binding="{Binding SourceName}" Width="*" />
                                 <DataGridTextColumn Header="Ссылка (как записана)" Binding="{Binding SavedPath}" Width="1.5*" />
@@ -197,11 +273,19 @@
                         </DataGrid>
                     </DockPanel>
                 </TabItem>
-                <TabItem Header="{Binding MissingHeader}">
+                <TabItem>
+                    <TabItem.Header>
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock Style="{StaticResource Icon}" Text="&#xE7BA;" Foreground="{StaticResource ErrorBrush}" Margin="0,0,4,0"
+                                       VerticalAlignment="Center" ToolTip="Здесь есть то, что мешает поставить на учёт"
+                                       Visibility="{Binding MissingBlocked, Converter={StaticResource BoolVis}}" />
+                            <TextBlock Text="{Binding MissingHeader}" />
+                        </StackPanel>
+                    </TabItem.Header>
                     <DockPanel>
                         <TextBlock DockPanel.Dock="Top" Style="{StaticResource Muted}" Margin="4"
                                    Text="Файл не найден ни по сохранённому пути, ни по имени в папках поиска. Добавьте папку с ним в поиск или разрешите постановку с отсутствующими ссылками." />
-                        <DataGrid ItemsSource="{Binding Missing}">
+                        <DataGrid ItemsSource="{Binding Missing}" SelectedItem="{Binding SelectedMissing}" inf:ScrollSelection.IntoView="True">
                             <DataGrid.Columns>
                                 <DataGridTextColumn Header="Документ" Binding="{Binding SourceName}" Width="*" />
                                 <DataGridTextColumn Header="Ссылка (как записана)" Binding="{Binding SavedPath}" Width="3*" />

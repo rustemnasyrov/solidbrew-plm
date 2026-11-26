@@ -89,4 +89,23 @@ namespace SolidBrew.Core.Cad
 
         public CadException(string message, Exception innerException) : base(message, innerException) { }
     }
+
+    /// <summary>
+    /// Документ нельзя открыть: в CAD уже открыт другой файл с тем же именем (SOLIDWORKS держит в памяти один документ с данным
+    /// именем). Закрыть его — решение пользователя: адаптер чужие документы не закрывает.
+    /// </summary>
+    public sealed class CadSameNameOpenException : CadException
+    {
+        public CadSameNameOpenException(string message, string openPath, string cadName) : base(message)
+        {
+            OpenPath = openPath;
+            CadName = cadName;
+        }
+
+        /// <summary>Полный путь открытого одноимённого документа.</summary>
+        public string OpenPath { get; }
+
+        /// <summary>Название CAD для пользователя («SOLIDWORKS»).</summary>
+        public string CadName { get; }
+    }
 }

@@ -8,7 +8,7 @@ namespace SolidBrew.Adapters.TestCad;
 /// Тестовый CAD: текстовые файлы <c>.tcprt</c> (деталь), <c>.tcasm</c> (сборка), <c>.tcdrw</c> (чертёж).
 /// Формат — <see cref="TestCadFormat"/>. Открытие имитирует поиск компонентов, как в SOLIDWORKS.
 /// </summary>
-public sealed class TestCadAdapter : ICadAdapter
+public sealed class TestCadAdapter : ICadAdapter, ICadFastReader
 {
     public const string Id = "testcad";
 
@@ -34,7 +34,7 @@ public sealed class TestCadAdapter : ICadAdapter
     public async Task<CadDocumentInfo> ReadAsync(string path, CancellationToken ct = default)
     {
         var text = await ReadTextAsync(path, ct).ConfigureAwait(false);
-        FullReadCount++;
+        lock (PropertiesReads) FullReadCount++;
         return TestCadFormat.Parse(path, text);
     }
 
@@ -44,8 +44,53 @@ public sealed class TestCadAdapter : ICadAdapter
         return TestCadFormat.Parse(path, text).References;
     }
 
-    /// <summary>Сколько раз вызывалось полное чтение <see cref="ReadAsync"/> (в SOLIDWORKS — с открытием документа). Для тестов.</summary>
+    /// <summary>
+    /// Сколько раз документ «открывался» ради свойств: <see cref="ReadAsync"/> и <see cref="ReadPropertiesAsync"/>
+    /// (в SOLIDWORKS — с открытием документа). Для тестов.
+    /// </summary>
     public int FullReadCount { get; private set; }
+
+    /// <summary>Пути, у которых читались свойства (<see cref="ReadPropertiesAsync"/>), по порядку. Для тестов.</summary>
+    public List<string> PropertiesReads { get; } = new List<string>();
+
+    /// <summary>Сколько раз вызывалось быстрое чтение <see cref="ReadStructureAsync"/>. Для тестов.</summary>
+    public int StructureReadCount { get; private set; }
+
+    /// <summary>Искусственная задержка чтения свойств (имитация открытия документа в CAD). Для тестов.</summary>
+    public TimeSpan PropertiesDelay { get; set; }
+
+    /// <summary>Ссылки, конфигурации и версия — без свойств.</summary>
+    public async Task<CadDocumentInfo> ReadStructureAsync(string path, CancellationToken ct = default)
+    {
+        var text = await ReadTextAsync(path, ct).ConfigureAwait(false);
+        lock (PropertiesReads) StructureReadCount++;
+        var info = TestCadFormat.Parse(path, text);
+        info.Properties = new Dictionary<string, Dictionary<string, string>>();
+        return info;
+    }
+
+    /// <summary>
+    /// Свойства, как в SOLIDWORKS: если в <see cref="OpenDocuments"/> есть файл с тем же именем из другой папки (в том числе
+    /// исходник читаемой копии), документ не открывается — <see cref="CadSameNameOpenException"/>.
+    /// </summary>
+    public async Task<Dictionary<string, Dictionary<string, string>>> ReadPropertiesAsync(string path, IReadOnlyList<string> configurations,
+        CancellationToken ct = default)
+    {
+        var full = Path.GetFullPath(path);
+        var name = Path.GetFileName(full);
+        var other = OpenDocuments.Select(Path.GetFullPath).FirstOrDefault(o =>
+            string.Equals(Path.GetFileName(o), name, StringComparison.OrdinalIgnoreCase) && !string.Equals(o, full, StringComparison.OrdinalIgnoreCase));
+        if (other != null)
+            throw new CadSameNameOpenException($"В TestCad уже открыт документ «{name}» из папки «{Path.GetDirectoryName(other)}». Закройте его и повторите.", other, DisplayName);
+        if (PropertiesDelay > TimeSpan.Zero) await Task.Delay(PropertiesDelay, ct).ConfigureAwait(false);
+        var text = await ReadTextAsync(full, ct).ConfigureAwait(false);
+        lock (PropertiesReads)
+        {
+            FullReadCount++;
+            PropertiesReads.Add(full);
+        }
+        return TestCadFormat.Parse(full, text).Properties;
+    }
 
     public async Task ReplaceReferencesAsync(string documentPath, IReadOnlyDictionary<string, string> oldToNew, CancellationToken ct = default)
     {

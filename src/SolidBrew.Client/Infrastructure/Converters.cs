@@ -176,3 +176,33 @@ public static class DropDown
         menu.IsOpen = true;
     }
 }
+
+/// <summary>
+/// <c>inf:ScrollSelection.IntoView="True"</c> у списка или таблицы: выбранная строка (в том числе выбранная из модели
+/// представления — переход по причине «Нельзя поставить на учёт») прокручивается в видимую область.
+/// </summary>
+public static class ScrollSelection
+{
+    public static readonly DependencyProperty IntoViewProperty = DependencyProperty.RegisterAttached(
+        "IntoView", typeof(bool), typeof(ScrollSelection), new PropertyMetadata(false, OnChanged));
+
+    public static bool GetIntoView(DependencyObject d) => (bool)d.GetValue(IntoViewProperty);
+
+    public static void SetIntoView(DependencyObject d, bool value) => d.SetValue(IntoViewProperty, value);
+
+    private static void OnChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    {
+        if (d is not System.Windows.Controls.Primitives.Selector selector) return;
+        selector.SelectionChanged -= OnSelectionChanged;
+        if (e.NewValue is true) selector.SelectionChanged += OnSelectionChanged;
+    }
+
+    private static void OnSelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
+    {
+        if (e.OriginalSource != sender) return; // комбо внутри ячейки
+        var item = ((System.Windows.Controls.Primitives.Selector)sender).SelectedItem;
+        if (item == null) return;
+        if (sender is System.Windows.Controls.DataGrid grid) grid.Dispatcher.BeginInvoke(() => grid.ScrollIntoView(item));
+        else if (sender is System.Windows.Controls.ListBox list) list.Dispatcher.BeginInvoke(() => list.ScrollIntoView(item));
+    }
+}

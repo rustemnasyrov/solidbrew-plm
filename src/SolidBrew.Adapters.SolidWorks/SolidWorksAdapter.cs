@@ -82,7 +82,7 @@ public sealed class SwOpenDiagnostics
 /// Адаптер SOLIDWORKS через COM-автоматизацию запущенной программы (позднее связывание, без interop-сборок).
 /// Все вызовы идут на одном выделенном потоке STA; методы можно вызывать из любых потоков.
 /// </summary>
-public sealed class SolidWorksAdapter : ICadAdapter, IDisposable
+public sealed class SolidWorksAdapter : ICadAdapter, ICadFastReader, IDisposable
 {
     public const string ProgId = "SldWorks.Application";
 
@@ -185,75 +185,108 @@ public sealed class SolidWorksAdapter : ICadAdapter, IDisposable
         return RunAsync(s => Read(s, full), ct);
     }
 
-    private SwReadResult Read(SwSession s, string full)
+    /// <summary>
+    /// Ссылки (<c>GetDocumentDependencies2</c>), конфигурации (<c>GetConfigurationNames</c>) и версия (<c>VersionHistory</c>) —
+    /// без открытия документа: десятки миллисекунд вместо 0,1–1,2 с у <see cref="ReadAsync"/>.
+    /// </summary>
+    public Task<CadDocumentInfo> ReadStructureAsync(string path, CancellationToken ct = default)
     {
-        var total = Stopwatch.StartNew();
-        var result = new SwReadResult();
+        var full = CheckFile(path);
+        return RunAsync(s => ReadStructure(s, full, new SwReadResult()), ct);
+    }
+
+    /// <summary>
+    /// Свойства: из уже открытого документа с этим путём, иначе документ открывается только для чтения, невидимым,
+    /// и закрывается. Одноимённый документ из другой папки (в том числе исходник копии, открытый пользователем) не трогаем —
+    /// <see cref="CadSameNameOpenException"/>.
+    /// </summary>
+    public Task<Dictionary<string, Dictionary<string, string>>> ReadPropertiesAsync(string path, IReadOnlyList<string> configurations,
+        CancellationToken ct = default)
+    {
+        if (configurations == null) throw new ArgumentNullException(nameof(configurations));
+        var full = CheckFile(path);
+        return RunAsync(s =>
+        {
+            var result = new SwReadResult();
+            ReadPropertiesInto(s, full, configurations.ToList(), result, skipIfBlocked: false);
+            return result.Info.Properties;
+        }, ct);
+    }
+
+    private CadDocumentInfo ReadStructure(SwSession s, string full, SwReadResult result)
+    {
         var info = result.Info;
         info.Path = full;
         info.Kind = KindOf(full);
-
         var sw = Stopwatch.StartNew();
         info.References = ReadReferences(s, full, traverse: false, result.RawDependencies, result.VirtualSkipped);
         result.DependenciesMs = sw.Elapsed.TotalMilliseconds;
-
         info.Configurations = ComObj.AsStrings(s.App.Call("GetConfigurationNames", full));
         result.VersionHistory = ComObj.AsStrings(s.App.Call("VersionHistory", full));
         info.CadVersionMajor = SwVersion.LastSavedYear(result.VersionHistory);
         info.CadVersion = SwVersion.Display(info.CadVersionMajor);
+        return info;
+    }
 
-        // Свойства читаются только из открытого документа.
+    private SwReadResult Read(SwSession s, string full)
+    {
+        var total = Stopwatch.StartNew();
+        var result = new SwReadResult();
+        ReadStructure(s, full, result);
+        ReadPropertiesInto(s, full, result.Info.Configurations, result, _options.SkipPropertiesIfBlocked);
+        result.TotalMs = total.Elapsed.TotalMilliseconds;
+        return result;
+    }
+
+    /// <summary>Свойства читаются только из открытого документа: уже открытого или открытого здесь (и закрытого).</summary>
+    private void ReadPropertiesInto(SwSession s, string full, List<string> configurations, SwReadResult result, bool skipIfBlocked)
+    {
+        var info = result.Info;
+        var sw = Stopwatch.StartNew();
         var open = s.FindOpenByPath(full);
         if (open != null)
         {
             result.OpenMode = "already-open";
-            sw.Restart();
-            info.Properties = ReadProperties(open.Doc, info.Configurations);
+            info.Properties = ReadProperties(open.Doc, configurations);
             result.PropertiesMs = sw.Elapsed.TotalMilliseconds;
-        }
-        else
-        {
-            // Одноимённый документ из другой папки не ищем заранее (перебор всех документов дорог):
-            // SOLIDWORKS сам откажет с кодом swFileWithSameTitleAlreadyOpen, тогда выясняем, какой именно.
-            result.OpenMode = "opened";
-            sw.Restart();
-            ComObj doc;
-            int errors, warnings;
-            var type = SwConst.DocTypeOf(full);
-            try
-            {
-                using (s.HideNewDocuments(type))
-                {
-                    doc = OpenForRead(s, full, type, out errors, out warnings);
-                }
-            }
-            catch (SwOpenException ex) when (ex.SameTitleOpen)
-            {
-                var blocked = SameNameError(s, full) ?? ex;
-                if (!_options.SkipPropertiesIfBlocked) throw blocked;
-                result.OpenMode = "skipped";
-                result.PropertiesSkipped = blocked.Message;
-                result.TotalMs = total.Elapsed.TotalMilliseconds;
-                return result;
-            }
-            result.OpenMs = sw.Elapsed.TotalMilliseconds;
-            result.OpenErrors = errors;
-            result.OpenWarnings = warnings;
-            var title = doc.CallString("GetTitle");
-            try
-            {
-                sw.Restart();
-                info.Properties = ReadProperties(doc, info.Configurations);
-                result.PropertiesMs = sw.Elapsed.TotalMilliseconds;
-            }
-            finally
-            {
-                s.CloseDoc(full, title);
-            }
+            return;
         }
 
-        result.TotalMs = total.Elapsed.TotalMilliseconds;
-        return result;
+        // Одноимённый документ из другой папки не ищем заранее (перебор всех документов дорог):
+        // SOLIDWORKS сам откажет с кодом swFileWithSameTitleAlreadyOpen, тогда выясняем, какой именно.
+        result.OpenMode = "opened";
+        ComObj doc;
+        int errors, warnings;
+        var type = SwConst.DocTypeOf(full);
+        try
+        {
+            using (s.HideNewDocuments(type))
+            {
+                doc = OpenForRead(s, full, type, out errors, out warnings);
+            }
+        }
+        catch (SwOpenException ex) when (ex.SameTitleOpen)
+        {
+            var blocked = (CadException?)SameNameError(s, full) ?? ex;
+            if (!skipIfBlocked) throw blocked;
+            result.OpenMode = "skipped";
+            result.PropertiesSkipped = blocked.Message;
+            return;
+        }
+        result.OpenMs = sw.Elapsed.TotalMilliseconds;
+        result.OpenErrors = errors;
+        result.OpenWarnings = warnings;
+        var title = doc.CallString("GetTitle");
+        try
+        {
+            sw.Restart();
+            info.Properties = ReadProperties(doc, configurations);
+            result.PropertiesMs = sw.Elapsed.TotalMilliseconds;
+        }
+        finally
+        {
+            s.CloseDoc(full, title);
+        }
     }
 
     private ComObj OpenForRead(SwSession s, string full, int type, out int errors, out int warnings)
@@ -274,13 +307,14 @@ public sealed class SolidWorksAdapter : ICadAdapter, IDisposable
         }
     }
 
-    private static CadException? SameNameError(SwSession s, string full)
+    private static CadSameNameOpenException? SameNameError(SwSession s, string full)
     {
         var others = s.FindSameNameElsewhere(full);
         if (others.Count == 0) return null;
-        return new CadException(
+        return new CadSameNameOpenException(
             $"В SOLIDWORKS уже открыт документ «{others[0].FileName}» из папки «{Path.GetDirectoryName(others[0].Path)}». " +
-            "SOLIDWORKS не может открыть второй файл с тем же именем. Закройте этот документ (и сборки, в которые он входит) и повторите.");
+            "SOLIDWORKS не может открыть второй файл с тем же именем. Закройте этот документ (и сборки, в которые он входит) и повторите.",
+            others[0].Path, "SOLIDWORKS");
     }
 
     private List<CadReference> ReadReferences(SwSession s, string full, bool traverse, List<string>? raw, List<string>? virtualSkipped)
@@ -307,7 +341,7 @@ public sealed class SolidWorksAdapter : ICadAdapter, IDisposable
         return result;
     }
 
-    private static Dictionary<string, Dictionary<string, string>> ReadProperties(ComObj doc, List<string> configurations)
+    private static Dictionary<string, Dictionary<string, string>> ReadProperties(ComObj doc, IReadOnlyList<string> configurations)
     {
         var result = new Dictionary<string, Dictionary<string, string>>();
         var ext = doc.CallObj("Extension") ?? throw new CadException("SOLIDWORKS не вернул ModelDocExtension.");

@@ -94,6 +94,15 @@ public sealed class ImportOptions
     /// нового расположения (<see cref="ImportReferenceCategory.Relocated"/>).
     /// </summary>
     public string? HeadSavedPath { get; init; }
+    /// <summary>
+    /// Не дочитывать свойства в <see cref="WorkspaceService.PrepareImportAsync"/>: отчёт возвращается сразу после быстрого чтения
+    /// ссылок, свойства загружаемых документов дочитывает вызывающий (окно — в фоне, пока пользователь разбирает отчёт):
+    /// <see cref="WorkspaceService.ReadImportPropertiesAsync(ImportReport, ImportDocument, CancellationToken)"/> и
+    /// <see cref="ImportReport.ApplyProperties"/>. <see cref="WorkspaceService.ExecuteImportAsync"/> дочитывает недостающие сам.
+    /// </summary>
+    public bool DeferProperties { get; init; }
+    /// <summary>Сколько файлов копировать во временную папку одновременно (сетевой диск), пока CAD читает предыдущие.</summary>
+    public int CopyParallelism { get; init; } = 4;
 }
 
 /// <summary>Что будет с документом при постановке на учёт.</summary>
@@ -110,7 +119,7 @@ public enum ImportDisposition
 }
 
 /// <summary>Документ-исходник, найденный при постановке на учёт.</summary>
-public sealed class ImportDocument
+public sealed partial class ImportDocument
 {
     /// <summary>Полный путь исходника (не меняется).</summary>
     public string SourcePath { get; init; } = string.Empty;
@@ -126,10 +135,27 @@ public sealed class ImportDocument
     public string? CadVersion { get; init; }
     public int? CadVersionMajor { get; init; }
     public bool IsNewerCadVersion { get; init; }
-    public string? Designation { get; init; }
-    public string? Name { get; init; }
+    /// <summary>Обозначение и наименование — из свойств; пока свойства не прочитаны (<see cref="HasProperties"/>), — пусто.</summary>
+    public string? Designation { get; internal set; }
+    public string? Name { get; internal set; }
     public List<string> Configurations { get; init; } = new();
-    public Dictionary<string, Dictionary<string, string>> Properties { get; init; } = new();
+    public Dictionary<string, Dictionary<string, string>> Properties { get; internal set; } = new();
+    /// <summary>
+    /// Свойства прочитаны. Отчёт строится быстрым чтением (только ссылки, конфигурации и версия CAD — без открытия документа),
+    /// свойства дочитываются потом и только у загружаемых документов (<see cref="NeedsProperties"/>).
+    /// </summary>
+    public bool HasProperties { get; internal set; }
+    /// <summary>Ссылки, конфигурации и версия CAD прочитаны (иначе <see cref="ReadError"/> — ошибка копирования или чтения ссылок).</summary>
+    public bool HasStructure { get; internal set; }
+    /// <summary>Свойства нужно дочитать: документ загружается новым, свойства ещё не читались, ошибки чтения нет.</summary>
+    public bool NeedsProperties => Disposition == ImportDisposition.New && HasStructure && !HasProperties && ReadError == null;
+    /// <summary>
+    /// Свойства не прочитаны, потому что в CAD открыт одноимённый документ из другой папки (CAD не открывает два файла с одним
+    /// именем): его полный путь. Закрыть его и «Прочитать заново» — <see cref="WorkspaceService.RereadImportDocumentsAsync"/>.
+    /// </summary>
+    public string? SameNameOpenPath { get; internal set; }
+    /// <summary>Название CAD, в котором открыт <see cref="SameNameOpenPath"/>.</summary>
+    public string? SameNameOpenCad { get; internal set; }
     public bool IsHead { get; init; }
     /// <summary>Найден в папке головного файла (с подпапками) или в дополнительных папках по своим ссылкам на комплект (чертёж, спецификация).</summary>
     public bool IsExtra { get; init; }
@@ -151,8 +177,8 @@ public sealed class ImportDocument
     public ImportDisposition Disposition { get; internal set; }
     /// <summary>Загружается новым документом.</summary>
     public bool IsNew => Disposition == ImportDisposition.New;
-    /// <summary>Ошибка чтения (файл не читается, нет адаптера CAD).</summary>
-    public string? ReadError { get; init; }
+    /// <summary>Ошибка чтения (файл не читается, нет адаптера CAD, не прочитаны свойства).</summary>
+    public string? ReadError { get; internal set; }
     public List<ImportReference> References { get; } = new();
 }
 
@@ -162,7 +188,7 @@ public sealed class ImportDocument
 /// Документ, содержимое которого уже есть в PDM, берётся из хранилища; документ без галочки остаётся ссылкой на файл.
 /// Временные копии удаляются <see cref="Dispose"/> (или автоматически после успешной постановки).
 /// </summary>
-public sealed class ImportReport : IDisposable
+public sealed partial class ImportReport : IDisposable
 {
     public string HeadFile { get; init; } = string.Empty;
     /// <summary>Папка проекта, под которую кладутся новые документы («Сборки/Узел»); пусто — корень проекта.</summary>
@@ -181,6 +207,8 @@ public sealed class ImportReport : IDisposable
     public string? CommonRoot { get; private set; }
     public List<PlanProblem> Problems { get; } = new();
     public Dictionary<string, int> WorkingCadVersions { get; init; } = new(StringComparer.OrdinalIgnoreCase);
+    /// <summary>Состояние обхода (папки поиска, индекс имён, копии) — для «Прочитать заново».</summary>
+    internal ImportScan? Scan { get; set; }
 
     public ImportDocument Head => Documents.First(d => d.IsHead);
     /// <summary>Документы постановки: новые и взятые из хранилища.</summary>

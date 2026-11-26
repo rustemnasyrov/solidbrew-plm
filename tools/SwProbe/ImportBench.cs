@@ -31,14 +31,29 @@ internal static class ImportBench
             counting.Reset();
             Commands.Progress?.Invoke($"import-bench: {name}");
             var sw = Stopwatch.StartNew();
-            var report = await service.PrepareImportAsync(headFull, extraFolders, null, ct).ConfigureAwait(false);
-            var seconds = sw.Elapsed.TotalSeconds;
+            // Как в окне: отчёт — быстрым чтением ссылок, затем свойства загружаемых документов.
+            var report = await service.PrepareImportAsync(headFull, extraFolders, null, ct, new ImportOptions { DeferProperties = true }).ConfigureAwait(false);
+            var reportSeconds = sw.Elapsed.TotalSeconds;
+            var structureReadsInReport = counting.StructureReads;
+            var propertiesInReport = counting.PropertiesReads + counting.FullReads;
+            sw.Restart();
+            var propertiesRead = await service.ReadPendingImportPropertiesAsync(report, null, ct).ConfigureAwait(false);
+            var propertiesSeconds = sw.Elapsed.TotalSeconds;
             return (new
             {
                 pass = name,
-                seconds = Math.Round(seconds, 1),
+                seconds = Math.Round(reportSeconds + propertiesSeconds, 1),
+                reportSeconds = Math.Round(reportSeconds, 1),
+                propertiesSeconds = Math.Round(propertiesSeconds, 1),
+                propertiesRead,
                 documents = report.Documents.Count,
                 included = report.IncludedDocuments.Count(),
+                structureReadsInReport,
+                propertiesReadsBeforeReport = propertiesInReport,
+                structureReads = counting.StructureReads,
+                structureReadSeconds = Math.Round(counting.StructureMs / 1000, 1),
+                propertiesReads = counting.PropertiesReads,
+                propertiesReadSeconds = Math.Round(counting.PropertiesMs / 1000, 1),
                 fullReads = counting.FullReads,
                 fullReadSeconds = Math.Round(counting.FullMs / 1000, 1),
                 referenceReads = counting.RefReads,
@@ -162,14 +177,33 @@ internal static class ImportBench
     }
 
     /// <summary>Обёртка адаптера: считает полные чтения и чтения только ссылок.</summary>
-    private sealed class CountingAdapter(ICadAdapter inner) : ICadAdapter
+    private sealed class CountingAdapter(SolidWorksAdapter inner) : ICadAdapter, ICadFastReader
     {
         public int FullReads { get; private set; }
         public int RefReads { get; private set; }
+        public int StructureReads { get; private set; }
+        public int PropertiesReads { get; private set; }
         public double FullMs { get; private set; }
         public double RefMs { get; private set; }
+        public double StructureMs { get; private set; }
+        public double PropertiesMs { get; private set; }
 
-        public void Reset() { FullReads = RefReads = 0; FullMs = RefMs = 0; }
+        public void Reset() { FullReads = RefReads = StructureReads = PropertiesReads = 0; FullMs = RefMs = StructureMs = PropertiesMs = 0; }
+
+        public async Task<CadDocumentInfo> ReadStructureAsync(string path, CancellationToken ct = default)
+        {
+            var sw = Stopwatch.StartNew();
+            try { return await inner.ReadStructureAsync(path, ct).ConfigureAwait(false); }
+            finally { StructureReads++; StructureMs += sw.Elapsed.TotalMilliseconds; }
+        }
+
+        public async Task<Dictionary<string, Dictionary<string, string>>> ReadPropertiesAsync(string path, IReadOnlyList<string> configurations,
+            CancellationToken ct = default)
+        {
+            var sw = Stopwatch.StartNew();
+            try { return await inner.ReadPropertiesAsync(path, configurations, ct).ConfigureAwait(false); }
+            finally { PropertiesReads++; PropertiesMs += sw.Elapsed.TotalMilliseconds; }
+        }
 
         public string CadId => inner.CadId;
         public string DisplayName => inner.DisplayName;
@@ -212,6 +246,8 @@ public class OfflineApi : DispatchProxy
     {
         if (targetMethod?.Name == nameof(IPdmApi.GetSettingsAsync))
             return Task.FromException<SettingsDto>(new PdmApiException(403, "Замер без сервера."));
+        if (targetMethod?.Name == nameof(IPdmApi.FindVersionsByHashAsync))
+            return Task.FromException<List<VersionByHashDto>>(new PdmApiException(404, "Замер без сервера.")); // как старый сервер
         throw new NotSupportedException($"Замер без сервера: {targetMethod?.Name} недоступен.");
     }
 }

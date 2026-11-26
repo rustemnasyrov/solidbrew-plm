@@ -84,8 +84,27 @@ public sealed class CliTests(ServerFixture fx) : IDisposable
         Assert.Contains("Отсутствуют: 1", report.Out);
         Assert.Contains(@"Покупные\Двигатель.tcprt", report.Out);
         Assert.Contains("--choose", report.Out);
+        // Тот же блок причин, что в окне постановки, — с ключами командной строки.
+        Assert.Contains("Нельзя поставить на учёт:", report.Out);
+        Assert.Contains("  • 1 неоднозначная ссылка — выберите вариант: --choose <ссылка>=<путь>", report.Out);
+        Assert.Contains("  • 1 отсутствующая ссылка — добавьте папку с файлами: --extra <папка> или разрешите: --allow-missing", report.Out);
+        Assert.Contains("Отчёт: ", report.Err);
 
-        AssertCode(CliApp.Failed, await sh.RunAsync(import.Append("--yes").ToArray()));
+        var json = await sh.RunAsync(import.Append("--json").ToArray());
+        AssertCode(CliApp.NeedsAnswer, json);
+        var root = JsonDocument.Parse(json.Out).RootElement;
+        Assert.False(root.GetProperty("canExecute").GetBoolean());
+        var codes = root.GetProperty("blockingReasons").EnumerateArray().Select(r => r.GetProperty("code").GetString()).ToList();
+        Assert.Equal(new[] { "local.ambiguousReference", "local.missingReference" }, codes);
+        Assert.True(root.GetProperty("timings").GetProperty("propertiesRead").GetInt32() > 0);
+
+        var refused = await sh.RunAsync(import.Append("--yes").ToArray());
+        AssertCode(CliApp.Failed, refused);
+        Assert.Contains("Нельзя поставить на учёт: 1 неоднозначная ссылка", refused.Err);
+        // С --allow-missing отсутствующая ссылка не мешает — остаётся только неоднозначная.
+        var allowed = await sh.RunAsync(import.Concat(new[] { "--allow-missing" }).ToArray());
+        Assert.DoesNotContain("отсутствующая ссылка —", allowed.Out);
+        Assert.Contains("1 неоднозначная ссылка —", allowed.Out);
         var search = await sh.RunAsync("search", "--project", project.Name, "--json");
         AssertCode(CliApp.Ok, search);
         Assert.Equal(0, JsonDocument.Parse(search.Out).RootElement.GetArrayLength());

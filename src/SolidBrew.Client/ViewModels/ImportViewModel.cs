@@ -26,6 +26,9 @@ public sealed partial class ImportViewModel : DialogViewModel
     private readonly Dictionary<ImportReference, ImportReferenceRow> _refRows = new();
     private readonly Dictionary<ImportDocument, ImportDocumentRow> _docRows = new();
     private bool _executed;
+    private CancellationTokenSource? _propertiesCts;
+    private Task _propertiesTask = Task.CompletedTask;
+    private bool _propertiesRunning;
 
     public ImportViewModel(AppSession session, Guid? preferredProject = null, ImportPreset? preset = null, string? headFile = null) : base(session.Services.Dialogs)
     {
@@ -35,6 +38,10 @@ public sealed partial class ImportViewModel : DialogViewModel
         if (preset != null) HeadFile = preset.HeadFile;
         else if (!string.IsNullOrWhiteSpace(headFile)) HeadFile = headFile;
         _analyzeOnStart = preset != null || !string.IsNullOrWhiteSpace(headFile);
+        Busy.PropertyChanged += (_, e) =>
+        {
+            if (e.PropertyName == nameof(BusyState.IsBusy)) UpdateBlocking();
+        };
     }
 
     private readonly bool _analyzeOnStart;
@@ -68,6 +75,25 @@ public sealed partial class ImportViewModel : DialogViewModel
     [ObservableProperty]
     private string _summary = string.Empty;
 
+    /// <summary>Ход фонового чтения свойств: «Свойства 13 из 140, осталось ≈ 01:20: «…»»; null — не идёт.</summary>
+    [ObservableProperty]
+    private string? _propertiesStatus;
+
+    /// <summary>Открытая вкладка отчёта (<see cref="ImportReportTab"/>).</summary>
+    [ObservableProperty]
+    private int _selectedTabIndex;
+
+    [ObservableProperty]
+    private bool _isProjectDropDownOpen;
+
+    [ObservableProperty] private ImportDocumentRow? _selectedDocument;
+    [ObservableProperty] private ImportReferenceRow? _selectedFound;
+    [ObservableProperty] private ImportReferenceRow? _selectedOutside;
+    [ObservableProperty] private ImportReferenceRow? _selectedNameOnly;
+    [ObservableProperty] private ImportReferenceRow? _selectedRelocated;
+    [ObservableProperty] private ImportReferenceRow? _selectedAmbiguous;
+    [ObservableProperty] private ImportReferenceRow? _selectedMissing;
+
     /// <summary>После постановки — открыть в рабочую папку.</summary>
     public bool OpenAfter { get; private set; }
 
@@ -84,6 +110,21 @@ public sealed partial class ImportViewModel : DialogViewModel
     public ObservableCollection<ImportReferenceRow> Missing { get; } = new();
     public ObservableCollection<ProblemItem> Problems { get; } = new();
 
+    /// <summary>Почему нельзя поставить на учёт — показывается рядом с кнопкой, каждая причина ведёт на свою вкладку.</summary>
+    public ObservableCollection<BlockingReasonItem> BlockingReasons { get; } = new();
+    public bool HasBlockingReasons => BlockingReasons.Count > 0;
+
+    /// <summary>Вкладки, на которых есть то, что мешает постановке (значок в заголовке).</summary>
+    public bool DocumentsBlocked => IsBlocked(ImportReportTab.Documents);
+    public bool OutsideBlocked => IsBlocked(ImportReportTab.OutsideFolders);
+    public bool NameOnlyBlocked => IsBlocked(ImportReportTab.NameOnly);
+    public bool RelocatedBlocked => IsBlocked(ImportReportTab.Relocated);
+    public bool AmbiguousBlocked => IsBlocked(ImportReportTab.Ambiguous);
+    public bool MissingBlocked => IsBlocked(ImportReportTab.Missing);
+
+    private bool IsBlocked(ImportReportTab tab) =>
+        BlockingReasons.Any(r => r.Tab == tab && r.Code != ImportBlockingCodes.PropertiesPending);
+
     public string FoundHeader => $"Найдены ({Found.Count})";
     public string OutsideHeader => $"За пределами папок ({Outside.Count})";
     public string NameOnlyHeader => $"Совпали только по имени ({NameOnly.Count})";
@@ -92,6 +133,9 @@ public sealed partial class ImportViewModel : DialogViewModel
     public string MissingHeader => $"Отсутствуют ({Missing.Count})";
     public string DocumentsHeader => Report == null ? "Документы" :
         $"Документы (загрузить {Report.NewDocuments.Count()}, из хранилища {Report.FromStorageDocuments.Count()}, по ссылке {Report.ByLinkDocuments.Count()})";
+
+    /// <summary>Фоновое чтение свойств (завершена — свойства загружаемых документов прочитаны или чтение остановлено).</summary>
+    public Task PropertiesTask => _propertiesTask;
 
     public override async Task InitializeAsync()
     {
@@ -107,8 +151,13 @@ public sealed partial class ImportViewModel : DialogViewModel
             await AnalyzeAsync();
             return;
         }
+        UpdateBlocking();
         Busy.Done("Выберите головной документ и, при необходимости, папки с чертежами.");
     }
+
+    partial void OnSelectedProjectChanged(ProjectDto? value) => UpdateBlocking();
+
+    partial void OnAllowMissingChanged(bool value) => UpdateBlocking();
 
     [RelayCommand]
     private void BrowseHead()
@@ -135,33 +184,115 @@ public sealed partial class ImportViewModel : DialogViewModel
 
     private bool CanAnalyze() => !Busy.IsBusy && !string.IsNullOrWhiteSpace(HeadFile);
 
-    /// <summary>Прочитать исходники и построить отчёт по ссылкам. Исходники не меняются.</summary>
+    /// <summary>
+    /// Прочитать исходники и построить отчёт по ссылкам (быстрым чтением, без открытия документов в CAD); свойства
+    /// загружаемых документов дочитываются в фоне. Исходники не меняются.
+    /// </summary>
     [RelayCommand(CanExecute = nameof(CanAnalyze))]
     public async Task AnalyzeAsync()
     {
         var head = HeadFile.Trim();
         var folders = ExtraFolders.ToList();
-        var options = _preset == null ? null : new ImportOptions
+        var options = new ImportOptions
         {
-            RelPathPrefix = _preset.RelPathPrefix, AllowExistingHead = true,
+            DeferProperties = true,
+            RelPathPrefix = _preset?.RelPathPrefix,
+            AllowExistingHead = _preset != null,
             // Выбран другой файл, чем по ссылке («Выбрать файл и сдать…»), — его прежнего места мы не знаем.
-            HeadSavedPath = string.Equals(head, _preset.HeadFile, StringComparison.OrdinalIgnoreCase) ? _preset.HeadSavedPath : null,
+            HeadSavedPath = _preset != null && string.Equals(head, _preset.HeadFile, StringComparison.OrdinalIgnoreCase) ? _preset.HeadSavedPath : null,
         };
-        var outcome = await Busy.RunAsync("Чтение исходников", (p, ct) => Workspace.PrepareImportAsync(head, folders, p, ct, options));
-        if (!outcome.Ok) return;
+        await StopPropertiesAsync();
+        var outcome = await Busy.RunAsync("Чтение ссылок", (p, ct) => Workspace.PrepareImportAsync(head, folders, p, ct, options));
+        if (!outcome.Ok)
+        {
+            UpdateBlocking();
+            return;
+        }
         Report?.Dispose();
         _refRows.Clear();
         _docRows.Clear();
         Report = outcome.Value;
         Rebuild();
         Busy.Done(Summary);
+        StartProperties();
     }
 
     private void OnDecisionChanged()
     {
         Report?.Recompute();
         Rebuild();
+        StartProperties(); // решение могло включить документы, свойства которых ещё не читались
     }
+
+    // ------------------------------------------------------------------ свойства в фоне
+
+    /// <summary>Начать (если не идёт) фоновое чтение свойств загружаемых документов: головной — первым.</summary>
+    private void StartProperties()
+    {
+        var report = Report;
+        if (report == null || _propertiesRunning || _executed || !report.HasPendingProperties) return;
+        _propertiesRunning = true;
+        var cts = _propertiesCts = new CancellationTokenSource();
+        _propertiesTask = ReadPropertiesAsync(report, cts.Token);
+    }
+
+    private async Task ReadPropertiesAsync(ImportReport report, CancellationToken ct)
+    {
+        var watch = System.Diagnostics.Stopwatch.StartNew();
+        var done = 0;
+        try
+        {
+            while (!ct.IsCancellationRequested && ReferenceEquals(Report, report) && report.NextForProperties() is { } doc)
+            {
+                var total = done + report.PendingProperties.Count();
+                PropertiesStatus = ImportReport.PropertiesProgressText(done, total, watch.Elapsed, doc.FileName);
+                UpdateBlocking();
+                // Чтение — в потоке адаптера CAD; результат применяется здесь, в потоке окна.
+                var read = await Workspace.ReadImportPropertiesAsync(report, doc, ct);
+                if (ct.IsCancellationRequested || !ReferenceEquals(Report, report)) break;
+                var refs = doc.References.Count;
+                report.ApplyProperties(read);
+                done++;
+                if (read.Error != null || doc.References.Count != refs)
+                {
+                    Rebuild(); // новая ошибка или убранные ссылки — меняются проблемы и состав
+                }
+                else
+                {
+                    if (_docRows.TryGetValue(doc, out var row)) row.RefreshProperties();
+                    OnPropertyChanged(nameof(DocumentsHeader));
+                }
+            }
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch (Exception ex)
+        {
+            Busy.Done("Свойства не дочитаны: " + ErrorText.Describe(ex).Message);
+        }
+        finally
+        {
+            _propertiesRunning = false;
+            PropertiesStatus = null;
+            UpdateBlocking();
+        }
+    }
+
+    /// <summary>Остановить фоновое чтение свойств и дождаться текущего документа.</summary>
+    private async Task StopPropertiesAsync()
+    {
+        _propertiesCts?.Cancel();
+        try
+        {
+            await _propertiesTask;
+        }
+        catch (OperationCanceledException)
+        {
+        }
+    }
+
+    // ------------------------------------------------------------------ отчёт и причины
 
     private void Rebuild()
     {
@@ -195,7 +326,6 @@ public sealed partial class ImportViewModel : DialogViewModel
         Documents.ReplaceWith(report.Documents.Where(d => d.Disposition != ImportDisposition.NotUsed || d.IsExtra)
             .OrderByDescending(d => d.IsHead).ThenBy(d => d.IsExtra).ThenBy(d => d.SourcePath, StringComparer.OrdinalIgnoreCase)
             .Select(DocRow));
-        Problems.ReplaceWith(ProblemItem.From(report.Problems));
 
         Summary = $"Загрузить в PDM: {report.NewDocuments.Count()}, взять из хранилища: {report.FromStorageDocuments.Count()}, оставить ссылкой: {report.ByLinkDocuments.Count()}. " +
                   $"Ссылки: найдены {Found.Count}, за пределами папок {Outside.Count}, только по имени {NameOnly.Count}, " +
@@ -204,10 +334,112 @@ public sealed partial class ImportViewModel : DialogViewModel
                   (report.CommonRoot != null ? $" Общая папка: {report.CommonRoot}." : string.Empty);
         foreach (var name in new[] { nameof(FoundHeader), nameof(OutsideHeader), nameof(NameOnlyHeader), nameof(RelocatedHeader), nameof(AmbiguousHeader), nameof(MissingHeader), nameof(DocumentsHeader) })
             OnPropertyChanged(name);
+        UpdateBlocking();
+    }
+
+    /// <summary>Пересчитать причины блокировки, порядок проблем и доступность кнопки.</summary>
+    private void UpdateBlocking()
+    {
+        var report = Report;
+        var items = new List<BlockingReasonItem>();
+        if (report == null)
+        {
+            if (!Busy.IsBusy)
+                items.Add(new BlockingReasonItem(new ImportBlockingReason
+                {
+                    Code = "local.noReport", Count = 1, Text = "отчёт не построен",
+                    Action = "выберите головной документ и нажмите «Прочитать ссылки»", Tab = ImportReportTab.Documents,
+                }));
+            if (SelectedProject == null)
+                items.Add(new BlockingReasonItem(new ImportBlockingReason
+                {
+                    Code = ImportBlockingCodes.NoProject, Count = 1, Text = "не выбран проект", Action = "выберите проект", Tab = ImportReportTab.Project,
+                }));
+        }
+        else if (!_executed)
+        {
+            foreach (var r in report.BlockingReasons(AllowMissing, SelectedProject != null))
+            {
+                var item = new BlockingReasonItem(r);
+                if (r.Code == ImportBlockingCodes.PropertiesPending && PropertiesStatus != null) item.Text = PropertiesStatus;
+                items.Add(item);
+            }
+
+            // Общий список: сначала то, что мешает сейчас (с учётом «Разрешить…»), затем прочие ошибки, предупреждения, сведения.
+            var cleared = AllowMissing ? new[] { LocalProblemCodes.MissingReference, LocalProblemCodes.Unconfirmed } : Array.Empty<string>();
+            Problems.ReplaceWith(ProblemItem.From(report.Problems)
+                .OrderBy(p => p.IsBlocking && !cleared.Contains(p.Code) ? 0 : p.IsBlocking ? 1 : p.IsWarning ? 2 : 3)
+                .ThenBy(p => p.Code is LocalProblemCodes.MissingReference or LocalProblemCodes.Unconfirmed or LocalProblemCodes.AmbiguousReference ? 1 : 0));
+        }
+        BlockingReasons.ReplaceWith(items);
+        foreach (var name in new[] { nameof(HasBlockingReasons), nameof(DocumentsBlocked), nameof(OutsideBlocked), nameof(NameOnlyBlocked), nameof(RelocatedBlocked), nameof(AmbiguousBlocked), nameof(MissingBlocked) })
+            OnPropertyChanged(name);
         ImportCommand.NotifyCanExecuteChanged();
     }
 
-    private bool CanImport() => !Busy.IsBusy && !_executed && Report != null && SelectedProject != null && Report.CanExecute(AllowMissing);
+    /// <summary>Перейти к причине: открыть её вкладку и выделить строку (повторный щелчок — следующую).</summary>
+    [RelayCommand]
+    private void GoToReason(BlockingReasonItem? item)
+    {
+        if (item == null) return;
+        if (item.Tab == ImportReportTab.Project)
+        {
+            IsProjectDropDownOpen = true;
+            return;
+        }
+        SelectedTabIndex = (int)item.Tab;
+        var reason = item.Reason;
+        var refs = reason.References.Where(_refRows.ContainsKey).ToList();
+        var docs = reason.Documents.Where(_docRows.ContainsKey).ToList();
+        var count = refs.Count > 0 ? refs.Count : docs.Count;
+        if (count == 0) return;
+        var i = item.NextIndex++ % count;
+        if (refs.Count > 0)
+        {
+            var row = _refRows[refs[i]];
+            switch (item.Tab)
+            {
+                case ImportReportTab.OutsideFolders: SelectedOutside = row; break;
+                case ImportReportTab.NameOnly: SelectedNameOnly = row; break;
+                case ImportReportTab.Relocated: SelectedRelocated = row; break;
+                case ImportReportTab.Ambiguous: SelectedAmbiguous = row; break;
+                case ImportReportTab.Missing: SelectedMissing = row; break;
+                default: SelectedFound = row; break;
+            }
+        }
+        else
+        {
+            SelectedDocument = _docRows[docs[i]];
+        }
+    }
+
+    private bool CanReread(BlockingReasonItem? item) => !Busy.IsBusy && Report != null && (item == null || item.CanReread);
+
+    /// <summary>
+    /// «Прочитать заново» только документы причины (например, после закрытия одноимённого документа в CAD),
+    /// без полного перечитывания: решения по остальным ссылкам сохраняются.
+    /// </summary>
+    [RelayCommand(CanExecute = nameof(CanReread))]
+    private async Task RereadAsync(BlockingReasonItem? item)
+    {
+        var report = Report;
+        if (report == null) return;
+        if (item?.Code == ImportBlockingCodes.PropertiesPending)
+        {
+            StartProperties();
+            return;
+        }
+        await StopPropertiesAsync();
+        var docs = item?.Reason.Documents.ToList();
+        var outcome = await Busy.RunAsync("Чтение заново", (p, ct) => Workspace.RereadImportDocumentsAsync(report, docs, p, ct));
+        if (!ReferenceEquals(Report, report)) return;
+        Rebuild();
+        if (outcome.Ok) Busy.Done($"Перечитываются: {outcome.Value!.Count}.");
+        StartProperties();
+    }
+
+    private bool CanImport() => !Busy.IsBusy && !_executed && Report != null && SelectedProject != null
+                                && !Report.HasPendingProperties && Report.CanExecute(AllowMissing);
 
     [RelayCommand(CanExecute = nameof(CanImport))]
     public async Task ImportAsync()
@@ -236,17 +468,20 @@ public sealed partial class ImportViewModel : DialogViewModel
         }
         var comment = string.IsNullOrWhiteSpace(Comment) ? null : Comment.Trim();
         var allowMissing = AllowMissing;
+        await StopPropertiesAsync();
         var outcome = await Busy.RunAsync("Постановка на учёт", (p, ct) => Workspace.ExecuteImportAsync(report, project.Id, comment, allowMissing, acceptNewer, p, ct));
         if (!outcome.Ok) return;
         var result = outcome.Value!;
         if (!result.Success)
         {
+            Rebuild();
             Problems.ReplaceWith(ProblemItem.From(report.Problems.Concat(result.Problems)));
             Dialogs.ShowError(Title, ErrorText.FromProblems(result.Message, result.Problems));
             return;
         }
         _executed = true;
         Result = result;
+        UpdateBlocking();
         Busy.Done(result.Message);
         if (_preset != null)
         {
@@ -263,8 +498,42 @@ public sealed partial class ImportViewModel : DialogViewModel
 
     public override void OnClosed()
     {
-        if (!_executed) Report?.Dispose();
+        _propertiesCts?.Cancel();
+        if (_executed) return;
+        var report = Report;
+        if (report == null) return;
+        // Временные копии удаляются, когда CAD закончит читать текущий документ.
+        if (_propertiesTask.IsCompleted) report.Dispose();
+        else _propertiesTask.ContinueWith(_ => report.Dispose(), TaskScheduler.Default);
     }
+}
+
+/// <summary>Причина «Нельзя поставить на учёт» для окна: текст, что сделать, переход к строкам.</summary>
+public sealed partial class BlockingReasonItem : ObservableObject
+{
+    public BlockingReasonItem(ImportBlockingReason reason)
+    {
+        Reason = reason;
+        _text = reason.Text;
+    }
+
+    public ImportBlockingReason Reason { get; }
+    public string Code => Reason.Code;
+    public ImportReportTab Tab => Reason.Tab;
+    public int Count => Reason.Count;
+
+    [ObservableProperty]
+    private string _text;
+
+    public string Action => Reason.Action;
+    /// <summary>Есть кнопка «Прочитать заново» (только документы этой причины).</summary>
+    public bool CanReread => Reason.CanReread;
+    /// <summary>Причину снимает флажок «Разрешить…».</summary>
+    public bool AllowMissingClears => Reason.AllowMissingClears;
+    /// <summary>Какую строку причины выделить при следующем переходе.</summary>
+    internal int NextIndex { get; set; }
+
+    public override string ToString() => Action.Length > 0 ? $"{Text} — {Action}" : Text;
 }
 
 public sealed partial class ImportReferenceRow : ObservableObject
@@ -339,7 +608,8 @@ public sealed partial class ImportDocumentRow : ObservableObject
     public string FileName => Document.FileName;
     public string RelPath => Document.RelPath.Length > 0 ? Document.RelPath : Document.SourcePath;
     public string SourcePath => Document.SourcePath;
-    public string? Designation => Document.Designation;
+    /// <summary>Обозначение; «…» — свойства ещё читаются.</summary>
+    public string? Designation => Document.HasProperties ? Document.Designation : Document.NeedsProperties ? "…" : null;
     public string? Name => Document.Name;
     public string KindText => Format.Kind(Document.Kind);
     public string? CadVersion => Document.CadVersion;
@@ -380,5 +650,14 @@ public sealed partial class ImportDocumentRow : ObservableObject
         OnPropertyChanged(nameof(RelPath));
         OnPropertyChanged(nameof(Include));
         OnPropertyChanged(nameof(DispositionText));
+        RefreshProperties();
+    }
+
+    /// <summary>Свойства дочитаны (или не прочитались) — обновить обозначение, наименование и ошибку.</summary>
+    public void RefreshProperties()
+    {
+        OnPropertyChanged(nameof(Designation));
+        OnPropertyChanged(nameof(Name));
+        OnPropertyChanged(nameof(ReadError));
     }
 }

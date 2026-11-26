@@ -10,9 +10,11 @@ public sealed partial class WorkspaceService
     /// Подготовить постановку на учёт готового проекта: обход ссылок от головного файла, поиск чертежей
     /// в папке головного файла (со всеми подпапками, например <c>Чертежи/</c>) и в <paramref name="extraFolders"/> по их ссылкам
     /// на комплект: попадают только чертежи, которые ссылаются на документы комплекта (у остальных читаются только ссылки).
-    /// Документы комплекта копируются во временную папку кэша, хешируются и читаются адаптером уже из копии
-    /// (свойства — из кэша по хешу, если файл уже читался); атрибуты исходников не меняются.
-    /// Папки поиска — папка головного файла и <paramref name="extraFolders"/>.
+    /// Документы комплекта копируются во временную папку кэша (несколько файлов сразу, пока CAD читает предыдущие), хешируются
+    /// и читаются адаптером из копии. Отчёт строится быстрым чтением — ссылки, конфигурации и версия CAD без открытия документа;
+    /// свойства (обозначение, наименование) дочитываются после отчёта и только у загружаемых документов — здесь же или, при
+    /// <see cref="ImportOptions.DeferProperties"/>, вызывающим (<see cref="ReadPendingImportPropertiesAsync"/>). Свойства берутся
+    /// из кэша по хешу, если файл уже читался; атрибуты исходников не меняются. Папки поиска — папка головного файла и <paramref name="extraFolders"/>.
     /// </summary>
     public async Task<ImportReport> PrepareImportAsync(string headFile, IEnumerable<string>? extraFolders = null,
         IProgress<WorkProgress>? progress = null, CancellationToken ct = default, ImportOptions? options = null)
@@ -47,46 +49,16 @@ public sealed partial class WorkspaceService
         {
             progress?.Report(new WorkProgress(WorkStage.Scanning, 0, 0, "Составление списка файлов в папках поиска"));
             var nameIndex = BuildNameIndex(searchFolders, ct);
-            var counter = 0;
-
-            async Task<ImportDocument> ScanAsync(string path, bool isHead, bool isExtra, string? savedLocation = null)
-            {
-                counter++;
-                progress?.Report(new WorkProgress(WorkStage.Reading, counter, 0, $"Чтение «{Path.GetFileName(path)}»"));
-                var doc = await ScanSourceAsync(report, path, counter, isHead, isExtra, MovedFrom(savedLocation, path), working, searchFolders, nameIndex, ct).ConfigureAwait(false);
-                report.Documents.Add(doc);
-                return doc;
-            }
-
-            async Task ClosureAsync(ImportDocument start)
-            {
-                var queue = new Queue<ImportDocument>();
-                queue.Enqueue(start);
-                while (queue.Count > 0)
-                {
-                    ct.ThrowIfCancellationRequested();
-                    var d = queue.Dequeue();
-                    foreach (var r in d.References)
-                    {
-                        var targets = r.Category == ImportReferenceCategory.Ambiguous ? r.Candidates : r.TargetPath != null ? new List<string> { r.TargetPath } : new List<string>();
-                        foreach (var t in targets)
-                        {
-                            if (report.Find(t) != null) continue;
-                            // Путь из ссылки — где файл лежал при сохранении: если его перенесли, по нему ищутся и его ссылки.
-                            queue.Enqueue(await ScanAsync(t, false, false, SavedFullPath(r.SavedPath, Path.GetDirectoryName(d.SourcePath)!)).ConfigureAwait(false));
-                        }
-                    }
-                }
-            }
+            report.Scan = new ImportScan(searchFolders, nameIndex, working, options.CopyParallelism);
 
             var headSaved = string.IsNullOrWhiteSpace(options.HeadSavedPath) ? null : SavedFullPath(options.HeadSavedPath, Path.GetDirectoryName(head)!);
-            var headDoc = await ScanAsync(head, true, false, headSaved).ConfigureAwait(false);
-            await ClosureAsync(headDoc).ConfigureAwait(false);
+            var headDoc = await ScanAsync(report, head, true, false, headSaved, progress, ct).ConfigureAwait(false);
+            await ClosureAsync(report, headDoc, progress, ct).ConfigureAwait(false);
 
             // Чертежи в папке головного файла (с подпапками) и в доп. папках: сборка не знает своих чертежей, поэтому их ищут
             // по ссылкам «чертёж → модель». Кандидаты — только чертежи: деталь или сборка из папки поиска, ссылающаяся на
             // комплект, — это вышестоящее или соседнее изделие, ему в комплекте не место. Сначала читаются только ссылки
-            // (без копирования и без открытия в CAD); полностью читаются лишь чертежи, вошедшие в комплект.
+            // (без копирования и без открытия в CAD); копируются и читаются дальше лишь чертежи, вошедшие в комплект.
             var drawingFiles = searchFolders.SelectMany(f => SafeEnumerate(f))
                 .Where(p => !IsTempName(p) && Adapters.FindFor(p) is { } a && a.KindOf(p) == DocumentKind.Drawing)
                 .Select(Path.GetFullPath).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
@@ -97,7 +69,8 @@ public sealed partial class WorkspaceService
                 ct.ThrowIfCancellationRequested();
                 checkedDrawings++;
                 if (report.Find(path) != null) continue;
-                progress?.Report(new WorkProgress(WorkStage.Reading, checkedDrawings, drawingFiles.Count, $"Поиск чертежей: ссылки «{Path.GetFileName(path)}»"));
+                progress?.Report(new WorkProgress(WorkStage.Reading, checkedDrawings, drawingFiles.Count,
+                    $"Поиск чертежей: ссылки {checkedDrawings} из {drawingFiles.Count}: «{Path.GetFileName(path)}»"));
                 List<CadReference> refs;
                 try
                 {
@@ -126,25 +99,111 @@ public sealed partial class WorkspaceService
                         r.Candidates.Any(x => report.Find(x) != null));
                     if (!linked) continue;
                     candidates.Remove(c);
-                    var d = await ScanAsync(c.Path, false, true).ConfigureAwait(false);
-                    await ClosureAsync(d).ConfigureAwait(false);
+                    var d = await ScanAsync(report, c.Path, false, true, null, progress, ct).ConfigureAwait(false);
+                    await ClosureAsync(report, d, progress, ct).ConfigureAwait(false);
                     changed = true;
                 }
             } while (changed);
 
             // Уже учтённые в PDM (то же содержимое) — берутся из хранилища, а не заводятся заново.
-            progress?.Report(new WorkProgress(WorkStage.Scanning, counter, counter, "Поиск уже учтённых файлов в хранилище"));
+            progress?.Report(new WorkProgress(WorkStage.Scanning, 0, 0, "Поиск уже учтённых файлов в хранилище"));
             await FindExistingAsync(report, ct).ConfigureAwait(false);
 
             // Решения по умолчанию: неоднозначные — без выбора, «только по имени» и «вне папок» — без подтверждения.
             report.Recompute();
-            progress?.Report(new WorkProgress(WorkStage.Done, counter, counter, $"Прочитано документов: {report.Documents.Count}"));
+            if (!options.DeferProperties) await ReadPendingImportPropertiesAsync(report, progress, ct).ConfigureAwait(false);
+            progress?.Report(new WorkProgress(WorkStage.Done, 1, 1, $"Прочитано документов: {report.Documents.Count}"));
             return report;
         }
         catch
         {
+            if (report.Scan != null) await report.Scan.DrainCopiesAsync().ConfigureAwait(false);
             report.Dispose();
             throw;
+        }
+    }
+
+    /// <summary>Прочитать документ быстрым чтением, добавить в отчёт и начать копировать файлы его ссылок.</summary>
+    private async Task<ImportDocument> ScanAsync(ImportReport report, string path, bool isHead, bool isExtra, string? savedLocation,
+        IProgress<WorkProgress>? progress, CancellationToken ct)
+    {
+        var scan = report.Scan!;
+        var n = ++scan.Scanned;
+        var known = Math.Max(n, scan.CopyCount);
+        progress?.Report(new WorkProgress(WorkStage.Reading, n, known, $"Чтение ссылок {n} из {known}: «{Path.GetFileName(path)}»"));
+        var doc = await ScanSourceAsync(report, path, isHead, isExtra, MovedFrom(savedLocation, path), ct).ConfigureAwait(false);
+        report.Documents.Add(doc);
+        Prefetch(report, doc, ct);
+        return doc;
+    }
+
+    /// <summary>Обход ссылок от <paramref name="start"/>: читаются все найденные файлы, ещё не попавшие в отчёт.</summary>
+    private async Task ClosureAsync(ImportReport report, ImportDocument start, IProgress<WorkProgress>? progress, CancellationToken ct)
+    {
+        var queue = new Queue<ImportDocument>();
+        queue.Enqueue(start);
+        while (queue.Count > 0)
+        {
+            ct.ThrowIfCancellationRequested();
+            var d = queue.Dequeue();
+            foreach (var r in d.References.ToList())
+            {
+                foreach (var t in TargetsOf(r))
+                {
+                    if (report.Find(t) != null) continue;
+                    // Путь из ссылки — где файл лежал при сохранении: если его перенесли, по нему ищутся и его ссылки.
+                    queue.Enqueue(await ScanAsync(report, t, false, false, SavedFullPath(r.SavedPath, Path.GetDirectoryName(d.SourcePath)!), progress, ct).ConfigureAwait(false));
+                }
+            }
+        }
+    }
+
+    private static IEnumerable<string> TargetsOf(ImportReference r) =>
+        r.Category == ImportReferenceCategory.Ambiguous ? r.Candidates : r.TargetPath != null ? new[] { r.TargetPath } : Array.Empty<string>();
+
+    /// <summary>Наперёд скопировать файлы ссылок документа: копирование идёт, пока CAD читает другие документы.</summary>
+    private void Prefetch(ImportReport report, ImportDocument doc, CancellationToken ct)
+    {
+        foreach (var t in doc.References.SelectMany(TargetsOf))
+        {
+            if (report.Find(t) == null) _ = StageCopy(report, t, ct);
+        }
+    }
+
+    /// <summary>
+    /// Копия исходника во временной папке (одна на исходник): копирование только чтением, параллельно с другими
+    /// (не больше <see cref="ImportOptions.CopyParallelism"/>). Ошибка ввода-вывода — в результате, а не исключением.
+    /// </summary>
+    private Task<StagedCopy> StageCopy(ImportReport report, string source, CancellationToken ct)
+    {
+        var scan = report.Scan!;
+        lock (scan.Copies)
+        {
+            if (scan.Copies.TryGetValue(source, out var existing)) return existing;
+            var n = ++scan.CopyCounter;
+            var copy = Path.Combine(report.StagingRoot, "files", n.ToString(System.Globalization.CultureInfo.InvariantCulture), Path.GetFileName(source));
+            var task = Task.Run(async () =>
+            {
+                await scan.CopyGate.WaitAsync(ct).ConfigureAwait(false);
+                try
+                {
+                    var stamp = FileOps.StampOf(source);
+                    var (sha, size) = await FileOps.CopyForReadingAsync(source, copy, ct).ConfigureAwait(false);
+                    // Хеш исходника известен — ключ кэша свойств чертежа не будет перечитывать модель с сетевого диска.
+                    if (stamp != null && stamp.SameAs(FileOps.StampOf(source))) RememberHash(source, stamp, sha);
+                    return new StagedCopy(copy, sha, size, null);
+                }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                {
+                    return new StagedCopy(copy, string.Empty, 0, ex);
+                }
+                finally
+                {
+                    scan.CopyGate.Release();
+                }
+            }, ct);
+            scan.Copies[source] = task;
+            return task;
         }
     }
 
@@ -243,24 +302,21 @@ public sealed partial class WorkspaceService
     private static bool IsInside(string folder, string path) =>
         Path.GetFullPath(path).StartsWith(folder.TrimEnd('\\') + "\\", StringComparison.OrdinalIgnoreCase);
 
-    private async Task<ImportDocument> ScanSourceAsync(ImportReport report, string source, int n, bool isHead, bool isExtra, string? savedLocation,
-        Dictionary<string, int> working, List<string> searchFolders, Dictionary<string, List<string>> nameIndex, CancellationToken ct)
+    private async Task<ImportDocument> ScanSourceAsync(ImportReport report, string source, bool isHead, bool isExtra, string? savedLocation, CancellationToken ct)
     {
-        var copy = Path.Combine(report.StagingRoot, "files", n.ToString(System.Globalization.CultureInfo.InvariantCulture), Path.GetFileName(source));
-        string sha;
-        long size;
-        try
-        {
-            (sha, size) = await FileOps.CopyForReadingAsync(source, copy, ct).ConfigureAwait(false);
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        var scan = report.Scan!;
+        var staged = await StageCopy(report, source, ct).ConfigureAwait(false);
+        var copy = staged.Path;
+        if (staged.Error != null)
         {
             return new ImportDocument
             {
-                SourcePath = source, StagingPath = copy, IsHead = isHead, IsExtra = isExtra,
-                ReadError = $"Не удалось прочитать «{source}»: {ex.Message}",
+                SourcePath = source, StagingPath = copy, IsHead = isHead, IsExtra = isExtra, SavedLocation = savedLocation,
+                ReadError = $"Не удалось прочитать «{source}»: {staged.Error.Message}",
             };
         }
+        var sha = staged.Sha256;
+        var size = staged.Size;
 
         var adapter = Adapters.FindFor(source);
         if (adapter == null)
@@ -268,21 +324,38 @@ public sealed partial class WorkspaceService
             return new ImportDocument
             {
                 SourcePath = source, StagingPath = copy, Sha256 = sha, Size = size, IsHead = isHead, IsExtra = isExtra, Kind = DocumentKind.Other,
+                SavedLocation = savedLocation,
                 ReadError = $"Файл «{Path.GetFileName(source)}» ({source}) не является документом поддерживаемого CAD — поставить его на учёт нельзя.",
             };
         }
 
+        var kind = adapter.KindOf(source);
         CadDocumentInfo info;
+        var hasProperties = !adapter.HasFastRead();
         try
         {
-            info = await ReadCadAsync(adapter, copy, sha, ct).ConfigureAwait(false);
+            if (hasProperties)
+            {
+                info = await ReadCadAsync(adapter, copy, sha, ct).ConfigureAwait(false); // адаптер без быстрого чтения — целиком
+            }
+            else
+            {
+                // Быстрое чтение: только ссылки, конфигурации и версия CAD. Свойства уже читавшегося файла — из кэша по хешу.
+                info = await adapter.ReadStructureAsync(copy, ct).ConfigureAwait(false);
+                if (CadReadCache.IsCacheable(kind) && ReadCache.TryGet(adapter.CadId, sha) is { } cached)
+                {
+                    info.Properties = cached.Properties;
+                    hasProperties = true;
+                    DocumentProperties.ApplyRemovedReferences(info);
+                }
+            }
         }
         catch (CadException ex)
         {
             return new ImportDocument
             {
                 SourcePath = source, StagingPath = copy, Sha256 = sha, Size = size, IsHead = isHead, IsExtra = isExtra,
-                Cad = adapter.CadId, Kind = adapter.KindOf(source),
+                Cad = adapter.CadId, Kind = kind, SavedLocation = savedLocation,
                 ReadError = $"Не удалось прочитать «{source}»: {ex.Message}",
             };
         }
@@ -294,25 +367,137 @@ public sealed partial class WorkspaceService
             Sha256 = sha,
             Size = size,
             Cad = adapter.CadId,
-            Kind = adapter.KindOf(source),
+            Kind = kind,
             CadVersion = info.CadVersion,
             CadVersionMajor = info.CadVersionMajor,
-            IsNewerCadVersion = info.CadVersionMajor != null && working.TryGetValue(adapter.CadId, out var w) && info.CadVersionMajor > w,
-            Designation = DocumentProperties.Designation(info.Properties),
-            Name = DocumentProperties.Name(info.Properties),
+            IsNewerCadVersion = info.CadVersionMajor != null && scan.Working.TryGetValue(adapter.CadId, out var w) && info.CadVersionMajor > w,
             Configurations = info.Configurations,
-            Properties = info.Properties,
             IsHead = isHead,
             IsExtra = isExtra,
             SavedLocation = savedLocation,
+            HasStructure = true,
         };
+        if (hasProperties) doc.SetProperties(info.Properties);
 
         var dir = Path.GetDirectoryName(source)!;
         foreach (var r in info.References)
         {
-            doc.References.Add(ClassifyImportReference(source, dir, r.SavedPath, savedLocation, searchFolders, nameIndex));
+            doc.References.Add(ClassifyImportReference(source, dir, r.SavedPath, savedLocation, scan.SearchFolders, scan.NameIndex));
         }
         return doc;
+    }
+
+    // ------------------------------------------------------------------ свойства после отчёта
+
+    /// <summary>
+    /// Дочитать свойства всех документов, которым они нужны (<see cref="ImportDocument.NeedsProperties"/>; головной — первым),
+    /// и применить к отчёту. Ход: «Свойства N из M, осталось ≈ мм:сс». Ошибка чтения документа — его <see cref="ImportDocument.ReadError"/>.
+    /// Возвращает число прочитанных документов.
+    /// </summary>
+    public async Task<int> ReadPendingImportPropertiesAsync(ImportReport report, IProgress<WorkProgress>? progress = null, CancellationToken ct = default)
+    {
+        if (report == null) throw new ArgumentNullException(nameof(report));
+        var done = 0;
+        var watch = System.Diagnostics.Stopwatch.StartNew();
+        while (report.NextForProperties() is { } d)
+        {
+            ct.ThrowIfCancellationRequested();
+            var total = done + report.PendingProperties.Count();
+            progress?.Report(new WorkProgress(WorkStage.Reading, done, total, ImportReport.PropertiesProgressText(done, total, watch.Elapsed, d.FileName)));
+            var read = await ReadImportPropertiesAsync(report, d, ct).ConfigureAwait(false);
+            report.ApplyProperties(read);
+            done++;
+        }
+        return done;
+    }
+
+    /// <summary>
+    /// Прочитать свойства одного документа отчёта (из кэша по хешу или адаптером, с открытием копии в CAD). Отчёт не меняется —
+    /// применить результат: <see cref="ImportReport.ApplyProperties"/> (окно делает это в своём потоке, пока читает в фоне).
+    /// </summary>
+    public async Task<ImportPropertiesRead> ReadImportPropertiesAsync(ImportReport report, ImportDocument document, CancellationToken ct = default)
+    {
+        if (report == null) throw new ArgumentNullException(nameof(report));
+        if (document == null) throw new ArgumentNullException(nameof(document));
+        var watch = System.Diagnostics.Stopwatch.StartNew();
+        var adapter = Adapters.Get(document.Cad) ?? Adapters.FindFor(document.SourcePath);
+        if (adapter == null)
+            return new ImportPropertiesRead(document, null, $"Нет адаптера CAD для «{document.FileName}».", null, null, watch.Elapsed);
+        try
+        {
+            var props = await ReadPropertiesCachedAsync(adapter, document, ct).ConfigureAwait(false);
+            return new ImportPropertiesRead(document, props, null, null, null, watch.Elapsed);
+        }
+        catch (CadSameNameOpenException ex)
+        {
+            return new ImportPropertiesRead(document, null, $"Не удалось прочитать свойства «{document.SourcePath}»: {ex.Message}", ex.OpenPath, ex.CadName, watch.Elapsed);
+        }
+        catch (CadException ex)
+        {
+            return new ImportPropertiesRead(document, null, $"Не удалось прочитать свойства «{document.SourcePath}»: {ex.Message}", null, null, watch.Elapsed);
+        }
+    }
+
+    private async Task<Dictionary<string, Dictionary<string, string>>> ReadPropertiesCachedAsync(ICadAdapter adapter, ImportDocument doc, CancellationToken ct)
+    {
+        string? key = null;
+        if (SolidBrew.Core.Hashing.Sha256Hex.IsValid(doc.Sha256))
+        {
+            if (CadReadCache.IsCacheable(doc.Kind)) key = doc.Sha256;
+            else if (doc.Kind == DocumentKind.Drawing)
+                key = await DrawingCacheKeyAsync(doc.StagingPath, doc.Sha256,
+                    doc.References.Select(r => new CadReference { SavedPath = r.SavedPath, FileName = CadReference.FileNameOf(r.SavedPath) }).ToList(), ct).ConfigureAwait(false);
+        }
+        if (key != null && ReadCache.TryGet(adapter.CadId, key) is { } cached) return cached.Properties;
+
+        var before = FileOps.StampOf(doc.StagingPath);
+        var props = await adapter.ReadPropertiesAsync(doc.StagingPath, doc.Configurations, ct).ConfigureAwait(false);
+        if (key != null && before != null && before.SameAs(FileOps.StampOf(doc.StagingPath)))
+        {
+            ReadCache.Put(adapter.CadId, key, new CadDocumentInfo
+            {
+                CadVersion = doc.CadVersion, CadVersionMajor = doc.CadVersionMajor, Configurations = doc.Configurations, Properties = props,
+            });
+        }
+        return props;
+    }
+
+    /// <summary>
+    /// «Прочитать заново» документы с ошибкой чтения (по умолчанию — все такие): у прочитанных ссылками сбрасывается ошибка
+    /// свойств — их перечитает <see cref="ReadPendingImportPropertiesAsync"/> (или фоновое чтение окна); не скопированные или
+    /// не прочитанные документы копируются и читаются заново, с обходом их ссылок. Остальной отчёт и решения сохраняются.
+    /// Возвращает документы, которые будут перечитаны (новые объекты вместо перечитанных целиком).
+    /// </summary>
+    public async Task<List<ImportDocument>> RereadImportDocumentsAsync(ImportReport report, IEnumerable<ImportDocument>? documents = null,
+        IProgress<WorkProgress>? progress = null, CancellationToken ct = default)
+    {
+        if (report == null) throw new ArgumentNullException(nameof(report));
+        var scan = report.Scan ?? throw new WorkspaceException("Этот отчёт нельзя дочитать — прочитайте ссылки заново.");
+        var list = (documents ?? report.Documents.ToList()).Where(d => d.ReadError != null && report.Documents.Contains(d)).Distinct().ToList();
+        var result = new List<ImportDocument>();
+        var rescanned = false;
+        foreach (var d in list)
+        {
+            ct.ThrowIfCancellationRequested();
+            if (d.HasStructure)
+            {
+                d.ClearPropertiesError();
+                result.Add(d);
+                continue;
+            }
+            progress?.Report(new WorkProgress(WorkStage.Reading, 0, 0, $"Чтение «{d.FileName}» заново"));
+            lock (scan.Copies) scan.Copies.Remove(d.SourcePath);
+            var fresh = await ScanSourceAsync(report, d.SourcePath, d.IsHead, d.IsExtra, d.SavedLocation, ct).ConfigureAwait(false);
+            fresh.Include = d.Include;
+            report.Documents[report.Documents.IndexOf(d)] = fresh;
+            Prefetch(report, fresh, ct);
+            await ClosureAsync(report, fresh, progress, ct).ConfigureAwait(false);
+            result.Add(fresh);
+            rescanned = true;
+        }
+        if (rescanned) await FindExistingAsync(report, ct).ConfigureAwait(false);
+        report.Recompute();
+        return result;
     }
 
     /// <summary>
@@ -409,6 +594,8 @@ public sealed partial class WorkspaceService
         if (report == null) throw new ArgumentNullException(nameof(report));
         var result = new ImportResult();
         report.Recompute();
+        // Свойства, которые ещё не дочитаны (окно не дождалось, CLI, пакетная сдача), — до проверки: ошибка чтения блокирует.
+        if (report.PendingProperties.Any()) await ReadPendingImportPropertiesAsync(report, progress, ct).ConfigureAwait(false);
         if (!report.CanExecute(allowMissing))
         {
             result.Problems.AddRange(report.Problems.Where(p => p.IsBlocking));
@@ -528,4 +715,51 @@ public sealed partial class WorkspaceService
 
     /// <summary>Отказаться от постановки: удалить временные копии.</summary>
     public void DiscardImport(ImportReport report) => report?.Dispose();
+}
+
+/// <summary>Копия исходника во временной папке постановки (или ошибка копирования).</summary>
+internal sealed record StagedCopy(string Path, string Sha256, long Size, Exception? Error);
+
+/// <summary>Состояние обхода ссылок постановки: папки поиска, индекс имён файлов, копии во временную папку.</summary>
+internal sealed class ImportScan
+{
+    public ImportScan(List<string> searchFolders, Dictionary<string, List<string>> nameIndex, Dictionary<string, int> working, int copyParallelism)
+    {
+        SearchFolders = searchFolders;
+        NameIndex = nameIndex;
+        Working = working;
+        CopyGate = new SemaphoreSlim(Math.Max(1, copyParallelism));
+    }
+
+    public List<string> SearchFolders { get; }
+    public Dictionary<string, List<string>> NameIndex { get; }
+    public Dictionary<string, int> Working { get; }
+    public SemaphoreSlim CopyGate { get; }
+    /// <summary>Копии по полному пути исходника (запущенные наперёд и готовые).</summary>
+    public Dictionary<string, Task<StagedCopy>> Copies { get; } = new(StringComparer.OrdinalIgnoreCase);
+    public int CopyCounter { get; set; }
+    public int Scanned { get; set; }
+
+    public int CopyCount
+    {
+        get
+        {
+            lock (Copies) return Copies.Count;
+        }
+    }
+
+    /// <summary>Дождаться начатых копирований (перед удалением временной папки при отмене или ошибке).</summary>
+    public async Task DrainCopiesAsync()
+    {
+        Task[] all;
+        lock (Copies) all = Copies.Values.Cast<Task>().ToArray();
+        try
+        {
+            await Task.WhenAll(all).ConfigureAwait(false);
+        }
+        catch (Exception)
+        {
+            // отмена или ошибка копирования — копии всё равно удаляются вместе с папкой
+        }
+    }
 }

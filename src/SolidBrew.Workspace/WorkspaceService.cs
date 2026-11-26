@@ -183,6 +183,9 @@ public sealed partial class WorkspaceService
 
     private readonly System.Collections.Concurrent.ConcurrentDictionary<string, (FileStamp Stamp, string Sha)> _hashes = new(StringComparer.OrdinalIgnoreCase);
 
+    /// <summary>Запомнить хеш файла, посчитанный по пути (например, при копировании), — для <see cref="HashCachedAsync"/>.</summary>
+    private void RememberHash(string path, FileStamp stamp, string sha) => _hashes[Path.GetFullPath(path)] = (stamp, sha);
+
     /// <summary>Хеш файла с запоминанием по размеру и времени изменения (модели общие для многих чертежей). Ошибка чтения — null.</summary>
     private async Task<string?> HashCachedAsync(string path, CancellationToken ct)
     {

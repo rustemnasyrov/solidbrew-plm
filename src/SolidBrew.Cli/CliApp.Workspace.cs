@@ -13,9 +13,11 @@ public sealed partial class CliApp
         var project = await ResolveProjectAsync(_args.Value("project")
             ?? throw new CliException("Укажите проект: --project <имя или ID>. Список: sbpdm projects.")).ConfigureAwait(false);
         var extras = _args.Values("extra").Select(FullPath).ToList();
-        var options = _args.Value("saved-as") is { } savedAs ? new ImportOptions { HeadSavedPath = savedAs } : null;
-
+        // Отчёт — быстрым чтением ссылок; свойства загружаемых документов — следом (время каждого этапа — в отчёте).
+        var options = new ImportOptions { HeadSavedPath = _args.Value("saved-as"), DeferProperties = true };
+        var watch = System.Diagnostics.Stopwatch.StartNew();
         using var report = await Service.PrepareImportAsync(head, extras, Progress, _ct, options).ConfigureAwait(false);
+        var reportSeconds = watch.Elapsed.TotalSeconds;
 
         // Решения пользователя.
         foreach (var r in report.Documents.SelectMany(d => d.References))
@@ -53,12 +55,21 @@ public sealed partial class CliApp
             foreach (var d in docs) d.Include = false;
         }
         report.Recompute();
+        watch.Restart();
+        var propertiesRead = await Service.ReadPendingImportPropertiesAsync(report, Progress, _ct).ConfigureAwait(false);
+        var timings = new { reportSeconds = Math.Round(reportSeconds, 1), propertiesSeconds = Math.Round(watch.Elapsed.TotalSeconds, 1), propertiesRead };
+        Err.WriteLine($"Отчёт: {report.Documents.Count} документов за {reportSeconds:0.0} с; свойства: {propertiesRead} документов за {watch.Elapsed.TotalSeconds:0.0} с.");
 
         var allowMissing = _args.Flag("allow-missing");
-        if (!Json) PrintImportReport(report, project);
+        var reasons = report.BlockingReasons(allowMissing);
+        if (!Json)
+        {
+            PrintImportReport(report, project);
+            PrintBlockingReasons(reasons);
+        }
         int Stop(int code, string message)
         {
-            if (Json) Emit(ImportJson(report, project), () => { });
+            if (Json) Emit(ImportJson(report, project, reasons, timings), () => { });
             Err.WriteLine(message);
             return code;
         }
@@ -70,11 +81,11 @@ public sealed partial class CliApp
                 : "Разрешите проблемы (--choose, --accept-name-matches, --accept-outside, --accept-relocated, --allow-missing) и повторите с --yes.");
         }
         if (!report.CanExecute(allowMissing))
-            return Stop(Failed, "Поставить на учёт нельзя: есть нерешённые проблемы (см. отчёт).");
+            return Stop(Failed, ImportReport.BlockingSummary(reasons, cli: true));
         if (report.HasNewerCadVersion && !_args.Flag("accept-newer-cad"))
             return Stop(NeedsAnswer, "Есть файлы, сохранённые в версии CAD новее рабочей. Подтвердите их постановку: --accept-newer-cad.");
 
-        var json = ImportJson(report, project); // до выполнения: после успеха временные копии отчёта удаляются
+        var json = ImportJson(report, project, reasons, timings); // до выполнения: после успеха временные копии отчёта удаляются
         var result = await Service.ExecuteImportAsync(report, project.Id, _args.Value("comment"), allowMissing, _args.Flag("accept-newer-cad"), Progress, _ct).ConfigureAwait(false);
         Emit(new { report = json, result }, () =>
         {
@@ -86,9 +97,17 @@ public sealed partial class CliApp
         return result.Success ? Ok : Failed;
     }
 
-    private static object ImportJson(ImportReport report, Core.Contracts.ProjectDto project) => new
+    private static object ImportJson(ImportReport report, Core.Contracts.ProjectDto project, List<ImportBlockingReason> reasons, object timings) => new
     {
         project,
+        timings,
+        canExecute = reasons.Count == 0,
+        blockingReasons = reasons.Select(r => new
+        {
+            r.Code, r.Count, r.Text, action = r.CliAction.Length > 0 ? r.CliAction : r.Action, r.AllowMissingClears,
+            documents = r.Documents.Select(d => d.SourcePath),
+            references = r.References.Select(x => new { document = x.SourceDocument, x.SavedPath }),
+        }),
         head = report.HeadFile,
         searchFolders = report.SearchFolders,
         commonRoot = report.CommonRoot,
@@ -101,6 +120,27 @@ public sealed partial class CliApp
         }),
         problems = report.Problems,
     };
+
+    /// <summary>Блок «Нельзя поставить на учёт» — те же причины и подсказки, что в окне постановки (ключи — командной строки).</summary>
+    private void PrintBlockingReasons(List<ImportBlockingReason> reasons)
+    {
+        if (reasons.Count == 0)
+        {
+            Out.WriteLine("Можно ставить на учёт.");
+            return;
+        }
+        Out.WriteLine("Нельзя поставить на учёт:");
+        foreach (var r in reasons)
+        {
+            Out.WriteLine($"  • {r.Text} — {(r.CliAction.Length > 0 ? r.CliAction : r.Action)}");
+            foreach (var d in r.Documents.Take(5))
+                Out.WriteLine($"      {d.SourcePath}" + (d.SameNameOpenPath != null ? $"  [открыт: {d.SameNameOpenPath}]" : string.Empty));
+            foreach (var x in r.References.Take(5))
+                Out.WriteLine($"      {Path.GetFileName(x.SourceDocument)} → {x.SavedPath}");
+            var more = r.Documents.Count + r.References.Count - Math.Min(5, r.Documents.Count) - Math.Min(5, r.References.Count);
+            if (more > 0) Out.WriteLine($"      … и ещё {more}");
+        }
+    }
 
     private void PrintImportReport(ImportReport report, Core.Contracts.ProjectDto project)
     {
